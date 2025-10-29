@@ -1,0 +1,4 @@
+flask
+flask-cors
+aiohttp
+nest-asyncio
