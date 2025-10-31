@@ -3,7 +3,8 @@ import json
 import asyncio
 import aiohttp
 import random
-from flask import Flask, request, jsonify
+import time
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import nest_asyncio
 
@@ -30,8 +31,12 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
+# --- Global aiohttp session ---
+session_global = None
+
 # --- Gemini API ile cevap ---
 async def gemma_cevap(message: str, conversation: list, user_name=None):
+    global session_global
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
     MODEL_NAME = "gemini-2.5-flash"
     API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
@@ -52,33 +57,32 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
     try:
-        timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(API_URL, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if "candidates" in data and len(data["candidates"]) > 0:
-                        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
-                        if random.random() < 0.3 and not text.endswith(tuple(emojis)):
-                            text += " " + random.choice(emojis)
-                        return text
-                    else:
-                        return "❌ API yanıtı beklenenden farklı."
+        if session_global is None:
+            timeout = aiohttp.ClientTimeout(total=60)
+            session_global = aiohttp.ClientSession(timeout=timeout)
+
+        async with session_global.post(API_URL, json=payload, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if "candidates" in data and len(data["candidates"]) > 0:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
+                    if random.random() < 0.3 and not text.endswith(tuple(emojis)):
+                        text += " " + random.choice(emojis)
+                    return text
                 else:
-                    return f"❌ API Hatası ({resp.status})"
+                    return "❌ API yanıtı beklenenden farklı."
+            else:
+                return f"❌ API Hatası ({resp.status})"
     except asyncio.TimeoutError:
         return "❌ API yanıt vermiyor (timeout)"
     except Exception as e:
         return f"❌ Hata: {e}"
 
-# --- Chat endpoint ---
-@app.route("/api/chat", methods=["POST"])
-def chat():
+# --- Streaming chat endpoint ---
+@app.route("/api/chat_stream", methods=["POST"])
+def chat_stream():
     data = request.get_json()
-    if not data:
-        return jsonify({"response": "❌ Geçersiz JSON"}), 400
-
     userId = data.get("userId")
     chatId = data.get("currentChat", "default")
     message = data.get("message")
@@ -97,6 +101,46 @@ def chat():
     ]
 
     # Kullanıcı adı algılama
+    textLower = message.lower()
+    if "adım" in textLower or "benim adım" in textLower:
+        name = message.split()[-1].capitalize()
+        userInfo["name"] = name
+
+    reply = loop.run_until_complete(gemma_cevap(message, conversation, userInfo.get("name")))
+
+    history[userId][chatId].append({"sender": "user", "text": message})
+    history[userId][chatId].append({"sender": "nova", "text": reply})
+    save_history(history)
+
+    def generate():
+        for char in reply:
+            yield f"data:{char}\n\n"
+            time.sleep(0.02)  # Buradaki değeri düşürerek yazma hızını artırabilirsin
+        yield "data:__END__\n\n"
+
+    return Response(generate(), mimetype='text/event-stream')
+
+# --- Normal chat endpoint (isteğe bağlı) ---
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    data = request.get_json()
+    userId = data.get("userId")
+    chatId = data.get("currentChat", "default")
+    message = data.get("message")
+    userInfo = data.get("userInfo", {})
+
+    if not message or message.strip() == "":
+        return jsonify({"response": "❌ Mesaj boş."})
+
+    history = load_history()
+    history.setdefault(userId, {})
+    history[userId].setdefault(chatId, [])
+
+    conversation = [
+        {"role": "user" if msg["sender"] == "user" else "nova", "content": msg["text"]}
+        for msg in history[userId][chatId]
+    ]
+
     textLower = message.lower()
     if "adım" in textLower or "benim adım" in textLower:
         name = message.split()[-1].capitalize()
