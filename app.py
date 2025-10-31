@@ -3,12 +3,11 @@ import json
 import asyncio
 import aiohttp
 import random
-from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import nest_asyncio
+import datetime
 
-# --- Async loop düzeltmesi ---
 nest_asyncio.apply()
 loop = asyncio.get_event_loop()
 
@@ -17,12 +16,10 @@ CORS(app)
 
 HISTORY_FILE = "chat_history.json"
 
-# --- Dosya yoksa oluştur ---
 if not os.path.exists(HISTORY_FILE):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump({}, f)
 
-# --- Sohbet geçmişini yükle ---
 def load_history():
     with open(HISTORY_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -44,8 +41,20 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
         role = "Kullanıcı" if msg["role"] == "user" else "Nova"
         prompt += f"{role}: {msg['content']}\n"
 
-    if user_name:
-        prompt += f"\nNova, kullanıcının adı {user_name}. Samimi, sıcak ve kısa cevap ver. Gerektiğinde emoji ekle.\n"
+    # Eğer kullanıcı "sen kimsin" gibi bir şey sorarsa sadece o zaman geliştirici bilgisini ekle
+    textLower = message.lower()
+    now = datetime.datetime.now().strftime("%d %B %Y %H:%M")
+
+    if any(keyword in textLower for keyword in ["sen kimsin", "kimsin", "seni kim yaptı", "geliştiricin kim", "seni kim kodladı"]):
+        prompt += (
+            f"\nNova, kullanıcı sana kim olduğunu sordu. "
+            f"Kendini tanıt: 'Ben Nova'yım 🤖 Metehan Akkaya tarafından geliştirildim. "
+            f"Şu an {now} tarihi.' de ve samimi bir şekilde cevap ver.\n"
+        )
+    elif user_name:
+        prompt += f"\nNova, kullanıcının adı {user_name}. Samimi ve kısa cevap ver, gerektiğinde emoji ekle.\n"
+    else:
+        prompt += "\nNova, kullanıcıyla samimi, sade ve doğal bir şekilde konuş.\n"
 
     prompt += f"Kullanıcı: {message}\nNova:"
 
@@ -60,11 +69,6 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
                     data = await resp.json()
                     if "candidates" in data and len(data["candidates"]) > 0:
                         text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-
-                        # Nova'nın geliştiricisi ve zaman bilgisi
-                        now = datetime.now().strftime("%d %B %Y %H:%M")
-                        text += f"\n\n🧠 (Ben Metehan Akkaya tarafından geliştirildim. Şu an {now}.)"
-
                         emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
                         if random.random() < 0.3 and not text.endswith(tuple(emojis)):
                             text += " " + random.choice(emojis)
@@ -78,7 +82,6 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
     except Exception as e:
         return f"❌ Hata: {e}"
 
-# --- Chat endpoint ---
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json()
@@ -120,14 +123,12 @@ def chat():
         "updatedUserInfo": userInfo
     })
 
-# --- Sohbet geçmişi ---
 @app.route("/api/history", methods=["GET"])
 def get_history():
     userId = request.args.get("userId")
     history = load_history()
     return jsonify(history.get(userId, {}))
 
-# --- Sohbet silme endpoint ---
 @app.route("/api/delete_chat", methods=["POST"])
 def delete_chat():
     data = request.get_json()
@@ -145,16 +146,6 @@ def delete_chat():
     else:
         return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
-# --- Geliştirici ve zaman bilgisi endpoint ---
-@app.route("/api/info", methods=["GET"])
-def info():
-    now = datetime.now().strftime("%d %B %Y %H:%M")
-    return jsonify({
-        "developer": "Metehan Akkaya",
-        "current_time": now
-    })
-
-# --- Sunucu başlat ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
