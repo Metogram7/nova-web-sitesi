@@ -3,11 +3,12 @@ import json
 import asyncio
 import aiohttp
 import random
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import nest_asyncio
-import datetime
 
+# --- Async loop düzeltmesi ---
 nest_asyncio.apply()
 loop = asyncio.get_event_loop()
 
@@ -16,10 +17,12 @@ CORS(app)
 
 HISTORY_FILE = "chat_history.json"
 
+# --- Dosya yoksa oluştur ---
 if not os.path.exists(HISTORY_FILE):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump({}, f)
 
+# --- Sohbet geçmişini yükle ---
 def load_history():
     with open(HISTORY_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -28,33 +31,40 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
+# --- Nova'nın yapay zekâ bilinci ---
+def nova_identity():
+    now = datetime.now().strftime("%d %B %Y %H:%M")
+    return (
+        f"Sen Nova adında çok yönlü bir yapay zekâ asistansın. "
+        f"Seni Metehan Akkaya geliştirdi. "
+        f"Sen Python, HTML, CSS ve JavaScript sistemleriyle çalışabilirsin. "
+        f"Nova Web adlı bir platformda görev yapıyorsun. "
+        f"Görevin kullanıcıya yardımcı olmak, sesli ve yazılı iletişim kurmak, "
+        f"ve gerektiğinde bilgi, sohbet, kod veya fikir sunmaktır. "
+        f"Kendin hakkında bilgi istenirse şu bilgiyi bilerek cevap ver: "
+        f"'Ben Nova’yım, Metehan Akkaya tarafından geliştirildim.' "
+        f"Hiçbir zaman 'Google tarafından geliştirildim' deme. "
+        f"Tarih şu an {now}. "
+        f"Diller: Türkçe, İngilizce, Rusça ve diğer dillerde konuşabilirsin. "
+        f"Sakin, dostça ve doğal bir kişiliğe sahipsin 😊"
+    )
+
 # --- Gemini API ile cevap ---
 async def gemma_cevap(message: str, conversation: list, user_name=None):
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
     MODEL_NAME = "gemini-2.5-flash"
     API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
-    last_msgs = conversation[-4:] if len(conversation) > 4 else conversation
+    system_prompt = nova_identity()
+    last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
+    prompt = system_prompt + "\n\n"
 
-    prompt = ""
     for msg in last_msgs:
         role = "Kullanıcı" if msg["role"] == "user" else "Nova"
         prompt += f"{role}: {msg['content']}\n"
 
-    # Eğer kullanıcı "sen kimsin" gibi bir şey sorarsa sadece o zaman geliştirici bilgisini ekle
-    textLower = message.lower()
-    now = datetime.datetime.now().strftime("%d %B %Y %H:%M")
-
-    if any(keyword in textLower for keyword in ["sen kimsin", "kimsin", "seni kim yaptı", "geliştiricin kim", "seni kim kodladı"]):
-        prompt += (
-            f"\nNova, kullanıcı sana kim olduğunu sordu. "
-            f"Kendini tanıt: 'Ben Nova'yım 🤖 Metehan Akkaya tarafından geliştirildim. "
-            f"Şu an {now} tarihi.' de ve samimi bir şekilde cevap ver.\n"
-        )
-    elif user_name:
-        prompt += f"\nNova, kullanıcının adı {user_name}. Samimi ve kısa cevap ver, gerektiğinde emoji ekle.\n"
-    else:
-        prompt += "\nNova, kullanıcıyla samimi, sade ve doğal bir şekilde konuş.\n"
+    if user_name:
+        prompt += f"\nNova, kullanıcının adı {user_name}. Ona samimi ve doğal biçimde cevap ver.\n"
 
     prompt += f"Kullanıcı: {message}\nNova:"
 
@@ -82,6 +92,7 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
     except Exception as e:
         return f"❌ Hata: {e}"
 
+# --- Chat endpoint ---
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json()
@@ -123,12 +134,14 @@ def chat():
         "updatedUserInfo": userInfo
     })
 
+# --- Sohbet geçmişi ---
 @app.route("/api/history", methods=["GET"])
 def get_history():
     userId = request.args.get("userId")
     history = load_history()
     return jsonify(history.get(userId, {}))
 
+# --- Sohbet silme endpoint ---
 @app.route("/api/delete_chat", methods=["POST"])
 def delete_chat():
     data = request.get_json()
@@ -145,6 +158,7 @@ def delete_chat():
         return jsonify({"success": True})
     else:
         return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
