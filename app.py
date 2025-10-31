@@ -3,6 +3,7 @@ import json
 import asyncio
 import aiohttp
 import random
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import nest_asyncio
@@ -44,7 +45,7 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
         prompt += f"{role}: {msg['content']}\n"
 
     if user_name:
-        prompt += f"\nNova, kullanıcının adı {user_name}. Samimi ve kısa cevap ver. Gerektiğinde emoji ekle.\n"
+        prompt += f"\nNova, kullanıcının adı {user_name}. Samimi, sıcak ve kısa cevap ver. Gerektiğinde emoji ekle.\n"
 
     prompt += f"Kullanıcı: {message}\nNova:"
 
@@ -59,6 +60,11 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
                     data = await resp.json()
                     if "candidates" in data and len(data["candidates"]) > 0:
                         text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+                        # Nova'nın geliştiricisi ve zaman bilgisi
+                        now = datetime.now().strftime("%d %B %Y %H:%M")
+                        text += f"\n\n🧠 (Ben Metehan Akkaya tarafından geliştirildim. Şu an {now}.)"
+
                         emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
                         if random.random() < 0.3 and not text.endswith(tuple(emojis)):
                             text += " " + random.choice(emojis)
@@ -139,6 +145,16 @@ def delete_chat():
     else:
         return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
+# --- Geliştirici ve zaman bilgisi endpoint ---
+@app.route("/api/info", methods=["GET"])
+def info():
+    now = datetime.now().strftime("%d %B %Y %H:%M")
+    return jsonify({
+        "developer": "Metehan Akkaya",
+        "current_time": now
+    })
+
+# --- Sunucu başlat ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
