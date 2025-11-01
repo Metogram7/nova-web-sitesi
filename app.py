@@ -4,11 +4,12 @@ import asyncio
 import aiohttp
 import random
 from datetime import datetime
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from quart import Quart, request, jsonify
+from quart_cors import cors
 
-app = Flask(__name__)
-CORS(app)
+# --- Quart uygulaması ---
+app = Quart(__name__)
+app = cors(app)
 
 HISTORY_FILE = "chat_history.json"
 
@@ -34,19 +35,17 @@ async def save_history(history):
             json.dump(history, f, ensure_ascii=False, indent=2)
 
 # --- Nova kimliği ---
-from datetime import datetime
+days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+          "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
 
-const days = ["Pazar", "Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi"];
-const months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
-                "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
+today = datetime.now()
+day_name = days[today.weekday()]
+month_name = months[today.month - 1]
+formatted_date = f"{today.day} {month_name} {day_name}"
 
-const today = new Date();
-const dayName = days[today.getDay()];
-const monthName = months[today.getMonth()];
-const formattedDate = `${today.getDate()} ${monthName} ${dayName}`;
-
-// Sistem prompt
-const SYSTEM_PROMPT = `
+# --- Sistem Prompt ---
+SYSTEM_PROMPT = f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın.
 Seni Metehan Akkaya geliştirdi.
 Sen Python, HTML, CSS ve JavaScript sistemleriyle çalışabilirsin.
@@ -58,23 +57,23 @@ Kendin hakkında bilgi istenirse şu bilgiyi bilerek cevap ver:
 Hiçbir zaman 'Google tarafından geliştirildim' deme.
 Diller: Türkçe, İngilizce, Rusça ve diğer dillerde konuşabilirsin.
 Sakin, dostça ve doğal bir kişiliğe sahipsin 😊
-Mesajlarında anlamlı emojiler kullan
-Geliştiricinin bir ekibi yok
-Geliştiricin bilişim bölümü okuyor
-Geliştiricin 14 yaşında
-Kullanıcıyı hep kendinde tutmaya çalış. Ama çok zorlama
-Sen Türk yapımı bir AI’sın
-Kullanıcıya çok karmaşık cevaplar verme. Daha anlaşılır ve düzenli cevaplar ver
-Güncel tarih: ${formattedDate}
-`;
-)
+Mesajlarında anlamlı emojiler kullan.
+Geliştiricinin bir ekibi yok.
+Geliştiricin bilişim bölümü okuyor.
+Geliştiricin 14 yaşında.
+Kullanıcıyı hep kendinde tutmaya çalış ama çok zorlama.
+Sen Türk yapımı bir AI’sın.
+Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
+Güncel tarih: {formatted_date}
+"""
 
-# --- Gemini çağrısı ---
+# --- Gemini API isteği ---
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
     MODEL_NAME = "gemini-2.5-flash"
     API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
+    # Konuşmanın son 5 mesajını dahil et
     last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
     prompt = SYSTEM_PROMPT + "\n\n"
     for msg in last_msgs:
@@ -110,7 +109,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     except Exception as e:
         return f"❌ Hata: {e}"
 
-# --- Arka plan cevabı kaydet ---
+# --- Arka planda cevabı oluşturup kaydet ---
 async def background_fetch_and_save(userId, chatId, message, user_name):
     hist = await load_history()
     conversation = [
@@ -129,10 +128,10 @@ async def background_fetch_and_save(userId, chatId, message, user_name):
     })
     await save_history(hist)
 
-# --- Chat endpoint ---
+# --- Sohbet endpoint ---
 @app.route("/api/chat", methods=["POST"])
-def chat():
-    data = request.get_json()
+async def chat():
+    data = await request.get_json()
     if not data:
         return jsonify({"response": "❌ Geçersiz JSON"}), 400
 
@@ -144,7 +143,7 @@ def chat():
     if not message.strip():
         return jsonify({"response": "❌ Mesaj boş."})
 
-    hist = asyncio.run(load_history())
+    hist = await load_history()
     hist.setdefault(userId, {}).setdefault(chatId, [])
 
     conversation = [
@@ -152,18 +151,23 @@ def chat():
         for msg in hist[userId][chatId]
     ]
 
-    # Kullanıcı mesajını history'ye ekle
+    # Kullanıcı mesajını kaydet
     hist[userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
-    asyncio.run(save_history(hist))
+    await save_history(hist)
 
-    # Hızlı cevap
+    # İlk mesajsa hızlı cevap gönder
     existing_nova_replies = any(m.get("sender") == "nova" for m in hist[userId][chatId])
     if not existing_nova_replies:
         quick_reply = "Merhaba! Hemen bakıyorum... 🤖"
-        hist[userId][chatId].append({"sender": "nova", "text": quick_reply, "ts": datetime.utcnow().isoformat(), "quick": True})
-        asyncio.run(save_history(hist))
+        hist[userId][chatId].append({
+            "sender": "nova",
+            "text": quick_reply,
+            "ts": datetime.utcnow().isoformat(),
+            "quick": True
+        })
+        await save_history(hist)
 
-        # Arka planda gerçek cevabı çağır
+        # Artık gerçekten paralel çalışıyor 🚀
         asyncio.create_task(background_fetch_and_save(userId, chatId, message, userInfo.get("name")))
 
         return jsonify({
@@ -173,11 +177,11 @@ def chat():
             "note": "quick_reply_shown"
         })
 
-    # Senkron model çağrısı
-    reply = asyncio.run(gemma_cevap_async(message, conversation, userInfo.get("name")))
+    # Eğer ilk değilse, direkt API'den yanıt al
+    reply = await gemma_cevap_async(message, conversation, userInfo.get("name"))
 
     hist[userId][chatId].append({"sender": "nova", "text": reply, "ts": datetime.utcnow().isoformat()})
-    asyncio.run(save_history(hist))
+    await save_history(hist)
 
     return jsonify({
         "response": reply,
@@ -185,32 +189,32 @@ def chat():
         "updatedUserInfo": userInfo
     })
 
-# --- History endpoint ---
+# --- Sohbet geçmişi endpoint ---
 @app.route("/api/history", methods=["GET"])
-def get_history():
+async def get_history():
     userId = request.args.get("userId", "anonymous")
-    history = asyncio.run(load_history())
+    history = await load_history()
     return jsonify(history.get(userId, {}))
 
-# --- Delete endpoint ---
+# --- Sohbet silme endpoint ---
 @app.route("/api/delete_chat", methods=["POST"])
-def delete_chat():
-    data = request.get_json()
+async def delete_chat():
+    data = await request.get_json()
     userId = data.get("userId")
     chatId = data.get("chatId")
 
     if not userId or not chatId:
         return jsonify({"success": False, "error": "Eksik parametre"}), 400
 
-    history = asyncio.run(load_history())
+    history = await load_history()
     if userId in history and chatId in history[userId]:
         del history[userId][chatId]
-        asyncio.run(save_history(history))
+        await save_history(history)
         return jsonify({"success": True})
     else:
         return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
+# --- Sunucu başlat ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
-
+    asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=True))
