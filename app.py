@@ -3,14 +3,10 @@ import json
 import asyncio
 import aiohttp
 import random
+import threading
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import nest_asyncio
-
-# --- Async loop düzeltmesi ---
-nest_asyncio.apply()
-loop = asyncio.get_event_loop()
 
 app = Flask(__name__)
 CORS(app)
@@ -22,46 +18,56 @@ if not os.path.exists(HISTORY_FILE):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump({}, f)
 
-# --- Sohbet geçmişini yükle ---
+# --- Yardımcı: history yükle / kaydet ---
+history_lock = threading.Lock()
+
 def load_history():
-    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with history_lock:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except Exception:
+                return {}
 
 def save_history(history):
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+    with history_lock:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
 
-# --- Nova'nın yapay zekâ bilinci ---
-def nova_identity():
-    now = datetime.now().strftime("%d %B %Y %H:%M")
-    return (
-        f"Sen Nova adında çok yönlü bir yapay zekâ asistansın. "
-        f"Seni Metehan Akkaya geliştirdi. "
-        f"Sen Python, HTML, CSS ve JavaScript sistemleriyle çalışabilirsin. "
-        f"Nova Web adlı bir platformda görev yapıyorsun. "
-        f"Görevin kullanıcıya yardımcı olmak, sesli ve yazılı iletişim kurmak, "
-        f"ve gerektiğinde bilgi, sohbet, kod veya fikir sunmaktır. "
-        f"Kendin hakkında bilgi istenirse şu bilgiyi bilerek cevap ver: "
-        f"'Ben Nova’yım, Metehan Akkaya tarafından geliştirildim.' "
-        f"Hiçbir zaman 'Google tarafından geliştirildim' deme. "
-        f"Tarih şu an {now}. "
-        f"Diller: Türkçe, İngilizce, Rusça ve diğer dillerde konuşabilirsin. "
-        f"Sakin, dostça ve doğal bir kişiliğe sahipsin 😊"
-    )
+# --- Nova kimliği (sabit, her istekte yeniden oluşturmayalım) ---
+SYSTEM_PROMPT = (
+    "Sen Nova adında çok yönlü bir yapay zekâ asistansın. "
+    "Seni Metehan Akkaya geliştirdi. "
+    "Sen Python, HTML, CSS ve JavaScript sistemleriyle çalışabilirsin. "
+    "Nova Web adlı bir platformda görev yapıyorsun. "
+    "Görevin kullanıcıya yardımcı olmak, sesli ve yazılı iletişim kurmak, "
+    "ve gerektiğinde bilgi, sohbet, kod veya fikir sunmaktır. "
+    "Kendin hakkında bilgi istenirse şu bilgiyi bilerek cevap ver: "
+    "'Ben Nova’yım, Metehan Akkaya tarafından geliştirildim.' "
+    "Hiçbir zaman 'Google tarafından geliştirildim' deme. "
+    "Diller: Türkçe, İngilizce, Rusça ve diğer dillerde konuşabilirsin. "
+    "Sakin, dostça ve doğal bir kişiliğe sahipsin 😊"
+    "mesajlarında anlamlı emojiler kullan"
+    "gelişricinin bir ekibi yok"
+    "geliştiricin bilişim bölümü okyur"
+    "geliştiricin 14 yaşında "
+    "kullanıcıyı hep kendinde tutmaya çalış. Ama çok zorlama"
+    
+)
 
-# --- Gemini API ile cevap ---
-async def gemma_cevap(message: str, conversation: list, user_name=None):
+# --- Gemini çağrısı (arka planda çalışacak async fonksiyon) ---
+async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
     MODEL_NAME = "gemini-2.5-flash"
     API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
-    system_prompt = nova_identity()
+    # Kısa ve etkili prompt (son birkaç mesajı dahil et)
     last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
-    prompt = system_prompt + "\n\n"
+    prompt = SYSTEM_PROMPT + "\n\n"
 
     for msg in last_msgs:
-        role = "Kullanıcı" if msg["role"] == "user" else "Nova"
-        prompt += f"{role}: {msg['content']}\n"
+        role = "Kullanıcı" if msg.get("role") == "user" else "Nova"
+        prompt += f"{role}: {msg.get('content')}\n"
 
     if user_name:
         prompt += f"\nNova, kullanıcının adı {user_name}. Ona samimi ve doğal biçimde cevap ver.\n"
@@ -72,7 +78,7 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
     try:
-        timeout = aiohttp.ClientTimeout(total=30)
+        timeout = aiohttp.ClientTimeout(total=25)  # biraz kısa tutarak beklemeyi sınırlıyoruz
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(API_URL, json=payload, headers=headers) as resp:
                 if resp.status == 200:
@@ -92,41 +98,114 @@ async def gemma_cevap(message: str, conversation: list, user_name=None):
     except Exception as e:
         return f"❌ Hata: {e}"
 
-# --- Chat endpoint ---
+# --- Arka plan worker: modeli çağırır ve history'e kaydeder ---
+def background_fetch_and_save(userId, chatId, message, conversation, user_name):
+    """
+    Yeni bir event loop oluşturup gemma_cevap_async'i çağırır
+    ve sonrasında history'ye gerçek Nova cevabını yazar.
+    """
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        reply = loop.run_until_complete(gemma_cevap_async(message, conversation, user_name))
+    except Exception as e:
+        reply = f"❌ Arka plan hata: {e}"
+    finally:
+        try:
+            loop.close()
+        except:
+            pass
+
+    # History'yi güncelle
+    hist = load_history()
+    hist.setdefault(userId, {})
+    hist[userId].setdefault(chatId, [])
+    # Not: burada kullanıcı daha önce mesajı eklemiş olabilir; ama biz garanti için ekliyoruz
+    hist[userId][chatId].append({"sender": "nova", "text": reply, "from_bg": True, "ts": datetime.utcnow().isoformat()})
+    save_history(hist)
+
+# --- Chat endpoint (güncellendi) ---
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json()
     if not data:
         return jsonify({"response": "❌ Geçersiz JSON"}), 400
 
-    userId = data.get("userId")
+    userId = data.get("userId", "anonymous")
     chatId = data.get("currentChat", "default")
-    message = data.get("message")
+    message = data.get("message", "")
     userInfo = data.get("userInfo", {})
 
     if not message or message.strip() == "":
         return jsonify({"response": "❌ Mesaj boş."})
 
-    history = load_history()
-    history.setdefault(userId, {})
-    history[userId].setdefault(chatId, [])
+    hist = load_history()
+    hist.setdefault(userId, {})
+    hist[userId].setdefault(chatId, [])
 
+    # Mevcut conversation (model için role/format)
     conversation = [
-        {"role": "user" if msg["sender"] == "user" else "nova", "content": msg["text"]}
-        for msg in history[userId][chatId]
+        {"role": "user" if msg.get("sender") == "user" else "nova", "content": msg.get("text", "")}
+        for msg in hist[userId][chatId]
     ]
 
-    # Kullanıcı adı algılama
+    # Kullanıcı adı algılama (basit)
     textLower = message.lower()
     if "adım" in textLower or "benim adım" in textLower:
-        name = message.split()[-1].capitalize()
-        userInfo["name"] = name
+        # basit ayrıştırma
+        parts = message.strip().split()
+        if len(parts) >= 1:
+            name = parts[-1].capitalize()
+            userInfo["name"] = name
 
-    reply = loop.run_until_complete(gemma_cevap(message, conversation, userInfo.get("name")))
+    # Her zamanki akış: kullanıcı mesajını önce history'ye ekle
+    hist[userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
+    save_history(hist)
 
-    history[userId][chatId].append({"sender": "user", "text": message})
-    history[userId][chatId].append({"sender": "nova", "text": reply})
-    save_history(history)
+    # Eğer sohbet daha yeni başladı (history sadece kullanıcı mesajı içeriyorsa veya önceden hiç nova cevabı yoksa),
+    # hemen kullanıcıya hızlı bir ön-yanıt döndür.
+    existing_nova_replies = any(m.get("sender") == "nova" for m in hist[userId][chatId])
+    if not existing_nova_replies:
+        # Hızlı selam/ön-yanıt (çok hızlı — model olmadan)
+        quick_reply = "Merhaba! Hemen bakıyorum... 🤖"
+        # Kaydet: hızlı cevap olarak da history'ye ekleyebiliriz (isteğe bağlı)
+        hist[userId][chatId].append({"sender": "nova", "text": quick_reply, "ts": datetime.utcnow().isoformat(), "quick": True})
+        save_history(hist)
+
+        # Arka planda gerçek modeli çağır ve history'ye ekle
+        bg_thread = threading.Thread(
+            target=background_fetch_and_save,
+            args=(userId, chatId, message, conversation, userInfo.get("name")),
+            daemon=True
+        )
+        bg_thread.start()
+
+        # Hemen ön-yanıtı dön
+        return jsonify({
+            "response": quick_reply,
+            "chatId": chatId,
+            "updatedUserInfo": userInfo,
+            "note": "quick_reply_shown"
+        })
+
+    # Eğer zaten Nova cevapları varsa, senkron olarak model çağrısı yap (normal akış)
+    # (Bu kısım daha yavaş olabilir; istersen tüm çağrıları arka planda yapacak şekilde tek tipleştirebiliriz)
+    try:
+        # Senkron çağrı için yeni event loop oluşturup modelden bekle
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        reply = loop.run_until_complete(gemma_cevap_async(message, conversation, userInfo.get("name")))
+        try:
+            loop.close()
+        except:
+            pass
+    except Exception as e:
+        reply = f"❌ Hata: {e}"
+
+    # history'ye ekle ve kaydet
+    hist = load_history()
+    hist[userId][chatId].append({"sender": "nova", "text": reply, "ts": datetime.utcnow().isoformat()})
+    save_history(hist)
 
     return jsonify({
         "response": reply,
@@ -134,14 +213,14 @@ def chat():
         "updatedUserInfo": userInfo
     })
 
-# --- Sohbet geçmişi ---
+# --- History endpoint ---
 @app.route("/api/history", methods=["GET"])
 def get_history():
-    userId = request.args.get("userId")
+    userId = request.args.get("userId", "anonymous")
     history = load_history()
     return jsonify(history.get(userId, {}))
 
-# --- Sohbet silme endpoint ---
+# --- Delete endpoint ---
 @app.route("/api/delete_chat", methods=["POST"])
 def delete_chat():
     data = request.get_json()
@@ -159,7 +238,7 @@ def delete_chat():
     else:
         return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    # debug=True geliştirirken yardımcı ama production'da kapat
     app.run(host="0.0.0.0", port=port, debug=True)
