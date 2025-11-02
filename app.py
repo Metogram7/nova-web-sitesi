@@ -34,18 +34,19 @@ async def save_history(history):
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
 
-# --- Nova kimliği ---
-days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
-months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
-          "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+# --- Sistem Prompt fonksiyonu (güncel tarih ve saat) ---
+def get_system_prompt():
+    days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım"]
 
-today = datetime.now()
-day_name = days[today.weekday()]
-month_name = months[today.month - 1]
-formatted_date = f"{today.day} {month_name} {day_name}"
+    now = datetime.now()
+    day_name = days[now.weekday()]
+    month_name = months[now.month - 1]
+    formatted_date = f"{now.day} {month_name} {day_name}"
+    formatted_time = f"{now.hour:02d}:{now.minute:02d}"  # saat:dakika
 
-# --- Sistem Prompt ---
-SYSTEM_PROMPT = f"""
+    return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın.
 Seni Metehan Akkaya geliştirdi.
 Sen Python, HTML, CSS ve JavaScript sistemleriyle çalışabilirsin.
@@ -64,7 +65,7 @@ Geliştiricin 14 yaşında.
 Kullanıcıyı hep kendinde tutmaya çalış ama çok zorlama.
 Sen Türk yapımı bir AI’sın.
 Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
-Güncel tarih: {formatted_date}
+Güncel tarih ve saat: {formatted_date} {formatted_time}
 """
 
 # --- Gemini API isteği ---
@@ -75,7 +76,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
 
     # Konuşmanın son 5 mesajını dahil et
     last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
-    prompt = SYSTEM_PROMPT + "\n\n"
+    prompt = get_system_prompt() + "\n\n"
     for msg in last_msgs:
         role = "Kullanıcı" if msg.get("role") == "user" else "Nova"
         prompt += f"{role}: {msg.get('content')}\n"
@@ -167,7 +168,6 @@ async def chat():
         })
         await save_history(hist)
 
-        # Artık gerçekten paralel çalışıyor 🚀
         asyncio.create_task(background_fetch_and_save(userId, chatId, message, userInfo.get("name")))
 
         return jsonify({
