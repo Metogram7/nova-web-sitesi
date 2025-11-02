@@ -31,18 +31,29 @@ async def save_history(history):
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
 
-# --- Dinamik sistem prompt ---
-def get_system_prompt():
+# --- Nova'nın dahili tarihi ve saati ---
+nova_datetime = datetime(2025, 11, 2, 22, 27)  # Başlangıç: 2 Kasım 2025 Pazar 22:45
+
+def advance_nova_time(minutes: int = 1):
+    """Nova'nın dahili saatini ilerletir"""
+    global nova_datetime
+    nova_datetime += timedelta(minutes=minutes)
+
+def get_nova_date():
+    """Nova'nın simülasyon tarih ve saatini döndürür"""
     days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
-              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım"]
+              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    
+    day_name = days[nova_datetime.weekday()]
+    month_name = months[nova_datetime.month - 1]
+    formatted_date = f"{nova_datetime.day} {month_name} {day_name}"
+    formatted_time = f"{nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
+    return f"{formatted_date} {formatted_time}"
 
-    now = datetime.utcnow() + timedelta(hours=3)  # Türkiye saati
-    day_name = days[now.weekday()]
-    month_name = months[now.month - 1]
-    formatted_date = f"{now.day} {month_name} {day_name}"
-    formatted_time = f"{now.hour:02d}:{now.minute:02d}"
-
+# --- Dinamik sistem prompt ---
+def get_system_prompt():
+    nova_date = get_nova_date()
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın.
 Seni Metehan Akkaya geliştirdi.
@@ -62,10 +73,10 @@ Geliştiricin 14 yaşında.
 Kullanıcıyı hep kendinde tutmaya çalış ama çok zorlama.
 Sen Türk yapımı bir AI’sın.
 Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
-Güncel tarih ve saat (Türkiye saati): {formatted_date} {formatted_time}
+Güncel tarih ve saat (Nova simülasyonu): {nova_date}
 """
 
-# --- API çağrısı ---
+# --- Gemini API çağrısı ---
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
     MODEL_NAME = "gemini-2.5-flash"
@@ -96,6 +107,8 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                         emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
                         if random.random() < 0.3 and not text.endswith(tuple(emojis)):
                             text += " " + random.choice(emojis)
+                        # Her mesajda 1 dakika ilerle
+                        advance_nova_time(1)
                         return text
                     else:
                         return "❌ API yanıtı beklenenden farklı."
@@ -148,7 +161,6 @@ async def chat():
         for msg in hist[userId][chatId]
     ]
 
-    # Kullanıcı mesajını kaydet
     hist[userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
     await save_history(hist)
 
