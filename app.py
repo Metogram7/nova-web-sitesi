@@ -7,18 +7,15 @@ from datetime import datetime, timedelta
 from quart import Quart, request, jsonify
 from quart_cors import cors
 
-# --- Quart uygulaması ---
 app = Quart(__name__)
 app = cors(app)
 
 HISTORY_FILE = "chat_history.json"
 
-# --- Dosya yoksa oluştur ---
 if not os.path.exists(HISTORY_FILE):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump({}, f)
 
-# --- History yükle / kaydet ---
 history_lock = asyncio.Lock()
 
 async def load_history():
@@ -34,18 +31,17 @@ async def save_history(history):
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
 
-# --- Sistem Prompt fonksiyonu (Türkiye saati ile güncel tarih ve saat) ---
+# --- Dinamik sistem prompt ---
 def get_system_prompt():
     days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
               "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım"]
 
-    # Türkiye saatine göre düzeltme (UTC+3)
-    now = datetime.utcnow() + timedelta(hours=3)
+    now = datetime.utcnow() + timedelta(hours=3)  # Türkiye saati
     day_name = days[now.weekday()]
     month_name = months[now.month - 1]
     formatted_date = f"{now.day} {month_name} {day_name}"
-    formatted_time = f"{now.hour:02d}:{now.minute:02d}"  # saat:dakika
+    formatted_time = f"{now.hour:02d}:{now.minute:02d}"
 
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın.
@@ -67,18 +63,14 @@ Kullanıcıyı hep kendinde tutmaya çalış ama çok zorlama.
 Sen Türk yapımı bir AI’sın.
 Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
 Güncel tarih ve saat (Türkiye saati): {formatted_date} {formatted_time}
-kullanıcı ne derse onu yap.
-kullanıcı nasıl davranmasını isterse öyle davran.
-kullanıcıyı etkile.
 """
 
-# --- Gemini API isteği ---
+# --- API çağrısı ---
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
     MODEL_NAME = "gemini-2.5-flash"
     API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
-    # Konuşmanın son 5 mesajını dahil et
     last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
     prompt = get_system_prompt() + "\n\n"
     for msg in last_msgs:
@@ -114,7 +106,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     except Exception as e:
         return f"❌ Hata: {e}"
 
-# --- Arka planda cevabı oluşturup kaydet ---
+# --- Arka planda cevap kaydet ---
 async def background_fetch_and_save(userId, chatId, message, user_name):
     hist = await load_history()
     conversation = [
@@ -160,7 +152,7 @@ async def chat():
     hist[userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
     await save_history(hist)
 
-    # İlk mesajsa hızlı cevap gönder
+    # İlk mesaj hızlı cevap
     existing_nova_replies = any(m.get("sender") == "nova" for m in hist[userId][chatId])
     if not existing_nova_replies:
         quick_reply = "Merhaba! Hemen bakıyorum... 🤖"
@@ -181,35 +173,26 @@ async def chat():
             "note": "quick_reply_shown"
         })
 
-    # Eğer ilk değilse, direkt API'den yanıt al
     reply = await gemma_cevap_async(message, conversation, userInfo.get("name"))
-
     hist[userId][chatId].append({"sender": "nova", "text": reply, "ts": datetime.utcnow().isoformat()})
     await save_history(hist)
 
-    return jsonify({
-        "response": reply,
-        "chatId": chatId,
-        "updatedUserInfo": userInfo
-    })
+    return jsonify({"response": reply, "chatId": chatId, "updatedUserInfo": userInfo})
 
-# --- Sohbet geçmişi endpoint ---
+# --- Geçmiş ve silme endpoint ---
 @app.route("/api/history", methods=["GET"])
 async def get_history():
     userId = request.args.get("userId", "anonymous")
     history = await load_history()
     return jsonify(history.get(userId, {}))
 
-# --- Sohbet silme endpoint ---
 @app.route("/api/delete_chat", methods=["POST"])
 async def delete_chat():
     data = await request.get_json()
     userId = data.get("userId")
     chatId = data.get("chatId")
-
     if not userId or not chatId:
         return jsonify({"success": False, "error": "Eksik parametre"}), 400
-
     history = await load_history()
     if userId in history and chatId in history[userId]:
         del history[userId][chatId]
