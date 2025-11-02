@@ -3,7 +3,7 @@ import json
 import asyncio
 import aiohttp
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from quart import Quart, request, jsonify
 from quart_cors import cors
 
@@ -34,13 +34,14 @@ async def save_history(history):
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
 
-# --- Sistem Prompt fonksiyonu (güncel tarih ve saat) ---
+# --- Sistem Prompt fonksiyonu (Türkiye saati ile güncel tarih ve saat) ---
 def get_system_prompt():
     days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
               "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım"]
 
-    now = datetime.now()
+    # Türkiye saatine göre düzeltme (UTC+3)
+    now = datetime.utcnow() + timedelta(hours=3)
     day_name = days[now.weekday()]
     month_name = months[now.month - 1]
     formatted_date = f"{now.day} {month_name} {day_name}"
@@ -65,7 +66,10 @@ Geliştiricin 14 yaşında.
 Kullanıcıyı hep kendinde tutmaya çalış ama çok zorlama.
 Sen Türk yapımı bir AI’sın.
 Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
-Güncel tarih ve saat: {formatted_date} {formatted_time}
+Güncel tarih ve saat (Türkiye saati): {formatted_date} {formatted_time}
+kullanıcı ne derse onu yap.
+kullanıcı nasıl davranmasını isterse öyle davran.
+kullanıcıyı etkile.
 """
 
 # --- Gemini API isteği ---
