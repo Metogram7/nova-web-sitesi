@@ -23,16 +23,16 @@ async def load_history():
     async with history_lock:
         try:
             return await asyncio.to_thread(lambda: json.load(open(HISTORY_FILE, "r", encoding="utf-8")))
-        except Exception:
+        except Exception as e:
+            print("⚠️ load_history hata:", e)
             return {}
 
 async def save_history(history):
     async with history_lock:
-        await asyncio.to_thread(
-            lambda: open(HISTORY_FILE, "w", encoding="utf-8").write(
-                json.dumps(history, ensure_ascii=False, indent=2)
-            )
-        )
+        def write_file():
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        await asyncio.to_thread(write_file)
 
 # === Nova'nın dahili tarih/saat sistemi ===
 nova_datetime = datetime(2025, 11, 2, 22, 27)
@@ -76,13 +76,14 @@ Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar 
 Güncel tarih ve saat (Nova simülasyonu): {nova_date}
 """
 
-# === Global Aiohttp Session ===
+# === Gemini İstemcisi ===
 class GeminiClient:
     def __init__(self):
         self.api_key = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
         self.model = "gemini-2.5-flash"
         self.url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-        self.timeout = aiohttp.ClientTimeout(total=30)
+        # Maksimum 120 saniye, hızlı yanıt için asenkron
+        self.timeout = aiohttp.ClientTimeout(total=120, connect=10, sock_read=120)
         self.session = aiohttp.ClientSession(timeout=self.timeout)
 
     async def close(self):
@@ -92,7 +93,7 @@ class GeminiClient:
         headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-        for attempt in range(3):  # Otomatik yeniden deneme (3 kez)
+        for attempt in range(3):  # Otomatik yeniden deneme
             try:
                 async with self.session.post(self.url, json=payload, headers=headers) as resp:
                     if resp.status == 200:
@@ -123,7 +124,7 @@ class GeminiClient:
 
 gemini_client = GeminiClient()
 
-# === Gemini Cevap Fonksiyonu ===
+# === Nova'nın cevap üretimi ===
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     prompt = get_system_prompt() + "\n\n"
     last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
@@ -143,7 +144,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
 
     return text
 
-# === Arka Plan Görevi ===
+# === Arka planda sohbet kaydı ===
 async def background_fetch_and_save(userId, chatId, message, user_name):
     try:
         hist = await load_history()
@@ -152,7 +153,7 @@ async def background_fetch_and_save(userId, chatId, message, user_name):
             for msg in hist.get(userId, {}).get(chatId, [])
         ]
         reply = await gemma_cevap_async(message, conversation, user_name)
-        hist = await load_history()
+
         hist.setdefault(userId, {}).setdefault(chatId, [])
         hist[userId][chatId].append({
             "sender": "nova",
