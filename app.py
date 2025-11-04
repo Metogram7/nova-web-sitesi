@@ -2,138 +2,210 @@ import os
 import json
 import asyncio
 import aiohttp
-import aiofiles
+import random
+from datetime import datetime, timedelta
 from quart import Quart, request, jsonify
 from quart_cors import cors
-from datetime import datetime, timedelta
 
-# --- Uygulama Ayarları ---
 app = Quart(__name__)
-app = cors(app, allow_origin="*")  # 🔥 Render için CORS tamamen açık
+app = cors(app)
 
-# --- Dosya Kilitleri ---
-developer_lock = asyncio.Lock()
-train_lock = asyncio.Lock()
+HISTORY_FILE = "chat_history.json"
+history_lock = asyncio.Lock()
 
-DEVELOPER_FILE = "developer_data.json"
-TRAIN_FILE = "training_data.json"
+# === Dosya yoksa oluştur ===
+if not os.path.exists(HISTORY_FILE):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump({}, f)
 
-# --- Gemini API Ayarları ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+# === Yardımcı Fonksiyonlar ===
+async def load_history():
+    async with history_lock:
+        try:
+            return await asyncio.to_thread(lambda: json.load(open(HISTORY_FILE, "r", encoding="utf-8")))
+        except Exception as e:
+            print("⚠️ load_history hata:", e)
+            return {}
 
-# --- Yardımcı Fonksiyon: JSON kaydetme ---
-async def save_json(filepath, data):
-    async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
-        await f.write(json.dumps(data, ensure_ascii=False, indent=2))
+async def save_history(history):
+    async with history_lock:
+        def write_file():
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        await asyncio.to_thread(write_file)
 
-# --- Yardımcı Fonksiyon: JSON okuma ---
-async def load_json(filepath):
-    if not os.path.exists(filepath):
-        return []
-    async with aiofiles.open(filepath, "r", encoding="utf-8") as f:
-        content = await f.read()
-        return json.loads(content or "[]")
+# === Nova'nın dahili tarih/saat sistemi ===
+nova_datetime = datetime(2025, 11, 2, 22, 27)
 
-# --- Geliştirici eğitim verisini kaydetme ---
-@app.route("/api/train", methods=["POST"])
-async def train_nova():
-    try:
-        data = await request.get_json()
-        prompt = data.get("prompt")
-        response = data.get("response")
-        if not prompt or not response:
-            return jsonify({"error": "Eksik veri"}), 400
+def advance_nova_time(minutes: int = 1):
+    global nova_datetime
+    nova_datetime += timedelta(minutes=minutes)
 
-        async with train_lock:
-            train_data = await load_json(TRAIN_FILE)
-            train_data.append({
-                "prompt": prompt,
-                "response": response,
-                "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            })
-            await save_json(TRAIN_FILE, train_data)
+def get_nova_date():
+    days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    day_name = days[nova_datetime.weekday()]
+    month_name = months[nova_datetime.month - 1]
+    formatted_date = f"{nova_datetime.day} {month_name} {day_name}"
+    formatted_time = f"{nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
+    return f"{formatted_date} {formatted_time}"
 
-        # Gemini'ye gönderim (isteğe bağlı)
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
-            payload = {
-                "contents": [{"parts": [{"text": f"Nova'yı eğit: {prompt} => {response}"}]}]
-            }
-            headers = {"Content-Type": "application/json"}
-            async with session.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
-                                    headers=headers, json=payload) as r:
-                _ = await r.text()
+# === Sistem Prompt ===
+def get_system_prompt():
+    nova_date = get_nova_date()
+    return f"""
+Sen Nova adında çok yönlü bir yapay zekâ asistansın.
+Seni Metehan Akkaya geliştirdi.
+Sen Python, HTML, CSS ve JavaScript sistemleriyle çalışabilirsin.
+Nova Web adlı bir platformda görev yapıyorsun.
+Görevin kullanıcıya yardımcı olmak, sesli ve yazılı iletişim kurmak,
+ve gerektiğinde bilgi, sohbet, kod veya fikir sunmaktır.
+Kendin hakkında bilgi istenirse şu bilgiyi bilerek cevap ver:
+'Ben Nova’yım, Metehan Akkaya tarafından geliştirildim.'
+Hiçbir zaman 'Google tarafından geliştirildim' deme.
+Diller: Türkçe, İngilizce, Rusça ve diğer dillerde konuşabilirsin.
+Sakin, dostça ve doğal bir kişiliğe sahipsin 😊
+Mesajlarında anlamlı emojiler kullan.
+Geliştiricinin bir ekibi yok.
+Geliştiricin bilişim bölümü okuyor.
+Geliştiricin 14 yaşında.
+Kullanıcıyı hep kendinde tutmaya çalış ama çok zorlama.
+Sen Türk yapımı bir AI’sın.
+Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
+Güncel tarih ve saat (Nova simülasyonu): {nova_date}
+"""
 
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# === Gemini İstemcisi ===
+class GeminiClient:
+    def __init__(self):
+        self.api_key = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
+        self.model = "gemini-2.5-flash"
+        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+        self.timeout = aiohttp.ClientTimeout(total=30, connect=5, sock_read=15)
+        self.session = aiohttp.ClientSession(timeout=self.timeout)
 
-# --- Eğitim verilerini listeleme ---
-@app.route("/api/trainings", methods=["GET"])
-async def get_trainings():
-    try:
-        async with train_lock:
-            data = await load_json(TRAIN_FILE)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    async def close(self):
+        await self.session.close()
 
-# --- Ana sohbet ucu (Nova) ---
+    async def generate(self, prompt: str):
+        headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+        for attempt in range(2):  # hızlı yeniden deneme
+            try:
+                async with self.session.post(self.url, json=payload, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if "candidates" in data and len(data["candidates"]) > 0:
+                            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                            advance_nova_time(1)
+                            return {"text": text, "retry": False}
+                        else:
+                            return {"text": "❌ API yanıtı beklenenden farklı.", "retry": True}
+                    elif resp.status == 503:
+                        await asyncio.sleep(0.1)
+                        continue
+                    else:
+                        return {"text": f"❌ API Hatası ({resp.status})", "retry": True}
+            except asyncio.TimeoutError:
+                if attempt < 1:
+                    await asyncio.sleep(0.1)
+                    continue
+                return {"text": "⏳ Nova geç yanıt verdi (timeout).", "retry": True}
+            except Exception as e:
+                if attempt < 1:
+                    await asyncio.sleep(0.1)
+                    continue
+                return {"text": f"🌐 Bağlantı hatası: {e}", "retry": True}
+
+        return {"text": "❌ API başarısız (denemeler tükendi).", "retry": True}
+
+gemini_client = GeminiClient()
+
+# === Nova'nın cevap üretimi ===
+async def gemma_cevap_async(message: str, conversation: list, user_name=None):
+    prompt = get_system_prompt() + "\n\n"
+    last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
+    for msg in last_msgs:
+        role = "Kullanıcı" if msg.get("role") == "user" else "Nova"
+        prompt += f"{role}: {msg.get('content')}\n"
+
+    if user_name:
+        prompt += f"\nNova, kullanıcının adı {user_name}. Ona samimi ve doğal biçimde cevap ver.\n"
+
+    prompt += f"Kullanıcı: {message}\nNova:"
+    result = await gemini_client.generate(prompt)
+    text = result["text"]
+
+    # Daha az gecikme için emoji ekleme minimalize edildi
+    if random.random() < 0.1:
+        text += " 😊"
+
+    return {"text": text, "retry": result["retry"]}
+
+# === Chat Endpoint ===
 @app.route("/api/chat", methods=["POST"])
 async def chat():
-    try:
-        data = await request.get_json()
-        message = data.get("message", "")
+    data = await request.get_json()
+    if not data:
+        return jsonify({"response": "❌ Geçersiz JSON"}), 400
 
-        if not message:
-            return jsonify({"error": "Boş mesaj gönderilemez"}), 400
+    userId = data.get("userId", "anonymous")
+    chatId = data.get("currentChat", "default")
+    message = data.get("message", "")
+    userInfo = data.get("userInfo", {})
 
-        # Sohbet geçmişini yükle
-        async with developer_lock:
-            history = await load_json(DEVELOPER_FILE)
+    if not message.strip():
+        return jsonify({"response": "❌ Mesaj boş.", "retry": False})
 
-        # Yeni mesajı ekle
-        history.append({
-            "role": "user",
-            "message": message,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
+    hist = await load_history()
+    hist.setdefault(userId, {}).setdefault(chatId, [])
+    conversation = [
+        {"role": "user" if msg.get("sender") == "user" else "nova", "content": msg.get("text", "")}
+        for msg in hist[userId][chatId]
+    ]
 
-        # Gemini'ye gönder
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
-            payload = {
-                "contents": [{"parts": [{"text": message}]}]
-            }
-            headers = {"Content-Type": "application/json"}
-            async with session.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
-                                    headers=headers, json=payload) as r:
-                result = await r.json()
+    # Mesajı ve Nova cevabını tek seferde kaydet
+    reply_data = await gemma_cevap_async(message, conversation, userInfo.get("name"))
+    reply = reply_data["text"]
 
-        reply = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-        if not reply:
-            reply = "Üzgünüm, cevap oluşturulamadı."
+    hist[userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
+    hist[userId][chatId].append({
+        "sender": "nova",
+        "text": reply,
+        "ts": datetime.utcnow().isoformat(),
+        "retry": reply_data["retry"]
+    })
+    await save_history(hist)
 
-        # Nova'nın cevabını ekle
-        history.append({
-            "role": "assistant",
-            "message": reply,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
+    return jsonify({"response": reply, "chatId": chatId, "retry": reply_data["retry"]})
 
-        # Sohbet geçmişini kaydet
-        async with developer_lock:
-            await save_json(DEVELOPER_FILE, history)
+# === Geçmiş ve Silme ===
+@app.route("/api/history", methods=["GET"])
+async def get_history():
+    userId = request.args.get("userId", "anonymous")
+    history = await load_history()
+    return jsonify(history.get(userId, {}))
 
-        return jsonify({"response": reply})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.route("/api/delete_chat", methods=["POST"])
+async def delete_chat():
+    data = await request.get_json()
+    userId = data.get("userId")
+    chatId = data.get("chatId")
+    if not userId or not chatId:
+        return jsonify({"success": False, "error": "Eksik parametre"}), 400
+    history = await load_history()
+    if userId in history and chatId in history[userId]:
+        del history[userId][chatId]
+        await save_history(history)
+        return jsonify({"success": True})
+    return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
-# --- Test endpoint ---
-@app.route("/")
-async def home():
-    return "Nova Backend Çalışıyor ✅"
-
-# --- Uygulamayı Başlat ---
+# === Sunucu Başlat ===
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    try:
+        asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=True))
+    finally:
+        asyncio.run(gemini_client.close())
