@@ -2,134 +2,138 @@ import os
 import json
 import asyncio
 import aiohttp
-from quart import Quart, request, jsonify
-from datetime import datetime
 import aiofiles
+from quart import Quart, request, jsonify
+from quart_cors import cors
+from datetime import datetime, timedelta
 
+# --- Uygulama Ayarları ---
 app = Quart(__name__)
+app = cors(app, allow_origin="*")  # 🔥 Render için CORS tamamen açık
 
-# ✅ CORS: Manuel ayar — Render için garantili
-@app.after_request
-async def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return response
-
-@app.route("/api/<path:path>", methods=["OPTIONS"])
-async def options_handler(path):
-    return jsonify({"status": "CORS OK"}), 200
-
-# --- Dosya kilitleri ---
+# --- Dosya Kilitleri ---
 developer_lock = asyncio.Lock()
 train_lock = asyncio.Lock()
 
 DEVELOPER_FILE = "developer_data.json"
 TRAIN_FILE = "training_data.json"
 
-# --- Gemini API ---
+# --- Gemini API Ayarları ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
-# --- Async JSON yardımcıları ---
-async def load_json(filename, lock):
-    async with lock:
-        if not os.path.exists(filename):
-            return {}
-        async with aiofiles.open(filename, "r", encoding="utf-8") as f:
-            try:
-                content = await f.read()
-                return json.loads(content) if content else {}
-            except json.JSONDecodeError:
-                return {}
+# --- Yardımcı Fonksiyon: JSON kaydetme ---
+async def save_json(filepath, data):
+    async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
+        await f.write(json.dumps(data, ensure_ascii=False, indent=2))
 
-async def save_json(filename, data, lock):
-    async with lock:
-        async with aiofiles.open(filename, "w", encoding="utf-8") as f:
-            await f.write(json.dumps(data, indent=2, ensure_ascii=False))
+# --- Yardımcı Fonksiyon: JSON okuma ---
+async def load_json(filepath):
+    if not os.path.exists(filepath):
+        return []
+    async with aiofiles.open(filepath, "r", encoding="utf-8") as f:
+        content = await f.read()
+        return json.loads(content or "[]")
 
-# --- Gemini istemcisi ---
-class GeminiClient:
-    def __init__(self, api_key):
-        self.api_key = api_key
-        self.session = aiohttp.ClientSession()
-
-    async def ask(self, prompt):
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        url = f"{GEMINI_API_URL}?key={self.api_key}"
-        async with self.session.post(url, json=payload, timeout=120) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                return f"⚠️ API hatası: {text}"
-            data = await resp.json()
-            try:
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-            except (KeyError, IndexError):
-                return "⚠️ Boş yanıt alındı."
-
-    async def close(self):
-        await self.session.close()
-
-gemini_client = GeminiClient(GEMINI_API_KEY)
-
-# --- Geliştirici Alanı ---
-@app.route("/api/dev", methods=["POST"])
-async def dev_chat():
-    data = await request.get_json()
-    message = data.get("message", "").strip()
-    if not message:
-        return jsonify({"error": "Mesaj boş olamaz."}), 400
-
-    response = await gemini_client.ask(f"Nova Developer Mode: {message}")
-
-    dev_data = await load_json(DEVELOPER_FILE, developer_lock)
-    dev_data.setdefault("messages", []).append({
-        "role": "user",
-        "content": message,
-        "response": response,
-        "time": datetime.now().isoformat()
-    })
-    await save_json(DEVELOPER_FILE, dev_data, developer_lock)
-    return jsonify({"reply": response})
-
-@app.route("/api/dev_history", methods=["GET"])
-async def get_dev_history():
-    dev_data = await load_json(DEVELOPER_FILE, developer_lock)
-    return jsonify({"messages": dev_data.get("messages", [])})
-
-# --- Eğitme Alanı ---
+# --- Geliştirici eğitim verisini kaydetme ---
 @app.route("/api/train", methods=["POST"])
 async def train_nova():
-    data = await request.get_json()
-    lesson = data.get("lesson", "").strip()
-    if not lesson:
-        return jsonify({"error": "Ders verisi boş olamaz."}), 400
+    try:
+        data = await request.get_json()
+        prompt = data.get("prompt")
+        response = data.get("response")
+        if not prompt or not response:
+            return jsonify({"error": "Eksik veri"}), 400
 
-    response = await gemini_client.ask(f"Nova eğitim modu: {lesson}")
+        async with train_lock:
+            train_data = await load_json(TRAIN_FILE)
+            train_data.append({
+                "prompt": prompt,
+                "response": response,
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            await save_json(TRAIN_FILE, train_data)
 
-    train_data = await load_json(TRAIN_FILE, train_lock)
-    train_data.setdefault("trainings", []).append({
-        "lesson": lesson,
-        "response": response,
-        "time": datetime.now().isoformat()
-    })
-    await save_json(TRAIN_FILE, train_data, train_lock)
-    return jsonify({"reply": response})
+        # Gemini'ye gönderim (isteğe bağlı)
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+            payload = {
+                "contents": [{"parts": [{"text": f"Nova'yı eğit: {prompt} => {response}"}]}]
+            }
+            headers = {"Content-Type": "application/json"}
+            async with session.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+                                    headers=headers, json=payload) as r:
+                _ = await r.text()
 
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- Eğitim verilerini listeleme ---
 @app.route("/api/trainings", methods=["GET"])
 async def get_trainings():
-    train_data = await load_json(TRAIN_FILE, train_lock)
-    return jsonify({"trainings": train_data.get("trainings", [])})
+    try:
+        async with train_lock:
+            data = await load_json(TRAIN_FILE)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- Ana sohbet ucu (Nova) ---
+@app.route("/api/chat", methods=["POST"])
+async def chat():
+    try:
+        data = await request.get_json()
+        message = data.get("message", "")
+
+        if not message:
+            return jsonify({"error": "Boş mesaj gönderilemez"}), 400
+
+        # Sohbet geçmişini yükle
+        async with developer_lock:
+            history = await load_json(DEVELOPER_FILE)
+
+        # Yeni mesajı ekle
+        history.append({
+            "role": "user",
+            "message": message,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+        # Gemini'ye gönder
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+            payload = {
+                "contents": [{"parts": [{"text": message}]}]
+            }
+            headers = {"Content-Type": "application/json"}
+            async with session.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+                                    headers=headers, json=payload) as r:
+                result = await r.json()
+
+        reply = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        if not reply:
+            reply = "Üzgünüm, cevap oluşturulamadı."
+
+        # Nova'nın cevabını ekle
+        history.append({
+            "role": "assistant",
+            "message": reply,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+        # Sohbet geçmişini kaydet
+        async with developer_lock:
+            await save_json(DEVELOPER_FILE, history)
+
+        return jsonify({"response": reply})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # --- Test endpoint ---
 @app.route("/")
 async def home():
-    return "✅ Nova API çalışıyor!"
+    return "Nova Backend Çalışıyor ✅"
 
-# --- Sunucu ---
+# --- Uygulamayı Başlat ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    try:
-        asyncio.run(app.run_task(host="0.0.0.0", port=port))
-    finally:
-        asyncio.run(gemini_client.close())
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
