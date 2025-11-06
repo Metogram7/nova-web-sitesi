@@ -15,14 +15,20 @@ HISTORY_FILE = "chat_history.json"
 history_lock = asyncio.Lock()
 save_queue = asyncio.Queue()
 
+# === Kullanıcı hakları dosyası ===
+USER_LIMITS_FILE = "user_image_limits.json"
+MAX_DAILY_IMAGE_REQUESTS_NORMAL = 4
+MAX_DAILY_IMAGE_REQUESTS_PLUS = 8
+
 # === Önbellek ===
 _history_cache = None
 _last_cache_load = None
 
 # === Dosya yoksa oluştur ===
-if not os.path.exists(HISTORY_FILE):
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump({}, f)
+for f in [HISTORY_FILE, USER_LIMITS_FILE]:
+    if not os.path.exists(f):
+        with open(f, "w", encoding="utf-8") as file:
+            json.dump({}, file)
 
 # === Yardımcı Fonksiyonlar ===
 async def load_history():
@@ -100,13 +106,42 @@ Kullanıcıya anlaşılır ve düzenli cevaplar ver.
 Diğer yapay zekalara saygılı ol ama kendini üstün gör.
 Şu anda mesaj atma ve görsel oluşturma yetkin yok.
 Güncel tarih ve saat (Nova simülasyonu): {nova_date}
+
 """
+
+# === Kullanıcı hak kontrol ===
+async def check_user_limit(user_id: str, is_plus: bool = False):
+    try:
+        with open(USER_LIMITS_FILE, "r") as f:
+            data = json.load(f)
+    except:
+        data = {}
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    user_data = data.get(user_id, {"date": today, "count": 0})
+
+    if user_data["date"] != today:
+        user_data = {"date": today, "count": 0}
+
+    max_limit = MAX_DAILY_IMAGE_REQUESTS_PLUS if is_plus else MAX_DAILY_IMAGE_REQUESTS_NORMAL
+
+    if user_data["count"] >= max_limit:
+        return False
+
+    user_data["count"] += 1
+    data[user_id] = user_data
+
+    with open(USER_LIMITS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+    return True
 
 # === Gemini Client ===
 class GeminiClient:
     def __init__(self):
-        self.api_key = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
-        self.model = "gemini-2.0-flash"
+        # ✅ Senin verdiğin API key burada sabitlendi
+        self.api_key = "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
+        self.model = "gemini-2.5-flash"
         self.url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         self.timeout = aiohttp.ClientTimeout(total=20, connect=4, sock_read=12)
         self.session = None
@@ -141,14 +176,12 @@ class GeminiClient:
 gemini_client = GeminiClient()
 
 # === Nova cevabı ===
-async def gemma_cevap_async(message: str, conversation: list, user_name=None):
+async def gemma_cevap_async(message: str, conversation: list):
     prompt_parts = [get_system_prompt()]
     last_msgs = conversation[-4:] if len(conversation) > 4 else conversation
     for msg in last_msgs:
         role = "Kullanıcı" if msg.get("role") == "user" else "Nova"
         prompt_parts.append(f"{role}: {msg.get('content')}")
-    if user_name:
-        prompt_parts.append(f"Nova, kullanıcının adı {user_name}. Ona samimi yanıt ver.")
     prompt_parts.append(f"Kullanıcı: {message}")
     prompt_parts.append("Nova:")
     prompt = "\n".join(prompt_parts)
@@ -163,20 +196,89 @@ async def chat():
         userId = data.get("userId", "anon")
         chatId = data.get("currentChat", "default")
         message = data.get("message", "")
-        userInfo = data.get("userInfo", {})
 
         hist = await load_history()
         hist.setdefault(userId, {}).setdefault(chatId, [])
         conversation = [{"role": "user" if m["sender"] == "user" else "nova",
                          "content": m["text"]} for m in hist[userId][chatId][-8:]]
         hist[userId][chatId].append({"sender": "user", "text": message})
-        reply = await gemma_cevap_async(message, conversation, userInfo.get("name"))
+        reply = await gemma_cevap_async(message, conversation)
         hist[userId][chatId].append({"sender": "nova", "text": reply})
         await save_queue.put(hist)
 
         return jsonify({"response": reply})
     except Exception as e:
         return jsonify({"response": f"❌ Sunucu hatası: {e}"}), 500
+
+# === Görsel oluşturma API ===
+@app.route("/api/generate_image", methods=["POST"])
+async def generate_image():
+    try:
+        data = await request.get_json()
+        prompt = data.get("prompt")
+        user_id = data.get("user_id", "anon")
+        is_plus = data.get("is_plus", False)
+
+        # Hak kontrol
+        if not await check_user_limit(user_id, is_plus):
+            limit_msg = "Günlük 8 hakkını doldurdun 🚀" if is_plus else "Günlük 4 hakkını doldurdun 🎨"
+            return jsonify({"error": limit_msg})
+
+        # Gemini Flash Image API çağrısı
+        session = await gemini_client.get_session()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateImage"
+        headers = {"Authorization": f"Bearer {gemini_client.api_key}"}
+        payload = {"prompt": {"text": prompt}}
+
+        async with session.post(url, headers=headers, json=payload) as resp:
+            result = await resp.json()
+            if "image" in result:
+                return jsonify({"image_base64": result["image"]})
+            else:
+                return jsonify({"error": "Görsel oluşturulamadı", "details": result})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# === Broadcast API ===
+@app.route("/api/broadcast", methods=["POST"])
+async def broadcast_message():
+    try:
+        data = await request.get_json()
+        message = data.get("message", "").strip()
+
+        if not message:
+            return jsonify({"success": False, "error": "Mesaj boş olamaz."}), 400
+
+        hist = await load_history()
+        for user_id, chats in hist.items():
+            for chat_id, chat_history in chats.items():
+                chat_history.append({"sender": "nova", "text": f"📢 {message}"})
+
+        await save_queue.put(hist)
+        return jsonify({"success": True, "message": f'Herkese "{message}" gönderildi.'})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/check_limit")
+async def check_limit():
+    user_id = request.args.get("user_id", "anon")
+    is_plus = request.args.get("is_plus", "false").lower() == "true"
+
+    try:
+        with open(USER_LIMITS_FILE, "r") as f:
+            data = json.load(f)
+    except:
+        data = {}
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    user_data = data.get(user_id, {"date": today, "count": 0})
+    if user_data["date"] != today:
+        user_data = {"date": today, "count": 0}
+
+    max_limit = MAX_DAILY_IMAGE_REQUESTS_PLUS if is_plus else MAX_DAILY_IMAGE_REQUESTS_NORMAL
+    remaining = max_limit - user_data["count"]
+    return jsonify({"remaining": remaining})
 
 # === Sunucu Başlat ===
 if __name__ == "__main__":
