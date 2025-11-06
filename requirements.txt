@@ -1,4 +1,4 @@
-flask
-flask-cors
-aiohttp
-nest-asyncio
+quart==0.19.6
+quart-cors==0.7.0
+aiohttp==3.9.5
+nest-asyncio==1.6.0
