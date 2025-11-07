@@ -10,6 +10,22 @@ from quart_cors import cors
 app = Quart(__name__)
 app = cors(app)
 
+# === Render uyumasın diye kendi kendine ping sistemi ===
+async def keep_alive():
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.get("https://nova-chat-d50f.onrender.com")
+                print("✅ Keep-alive ping gönderildi (Nova Web aktif tutuluyor).")
+        except Exception as e:
+            print("⚠️ Keep-alive hatası:", e)
+        await asyncio.sleep(600)  # 10 dakikada bir ping
+
+@app.before_serving
+async def startup():
+    asyncio.create_task(keep_alive())
+
+# === Dosya ayarları ===
 HISTORY_FILE = "chat_history.json"
 LAST_SEEN_FILE = "last_seen.json"
 
