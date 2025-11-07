@@ -252,6 +252,11 @@ async def delete_chat():
     else:
         return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
+# === Ana sayfa (ping kontrolü için) ===
+@app.route("/")
+async def home():
+    return "Nova Web aktif ✅"
+
 # === Başlat ===
 if __name__ == "__main__":
     asyncio.create_task(check_inactive_users())  # 3 gün kontrol sistemi
