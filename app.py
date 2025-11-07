@@ -52,7 +52,7 @@ async def save_json(file_path, data, lock):
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-# === Nova'nın dahili tarihi ===
+# === Nova'nın zamanı ===
 nova_datetime = datetime(2025, 11, 2, 22, 27)
 
 def advance_nova_time(minutes: int = 1):
@@ -136,7 +136,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     except Exception as e:
         return f"❌ Hata: {e}"
 
-# === Nova'nın 3 gün özleme kontrolü ===
+# === 3 gün özleme sistemi ===
 async def check_inactive_users():
     while True:
         last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
@@ -146,7 +146,6 @@ async def check_inactive_users():
             try:
                 last_dt = datetime.fromisoformat(last_time)
                 if (now - last_dt).days >= 3:
-                    # Kullanıcı 3 gündür yok
                     text = "Hey, seni 3 gündür görmüyorum 😢 Gel biraz konuşalım! 💫"
                     history.setdefault(user_id, {}).setdefault("default", [])
                     already_sent = any(
@@ -162,9 +161,9 @@ async def check_inactive_users():
                         await save_json(HISTORY_FILE, history, history_lock)
             except Exception:
                 continue
-        await asyncio.sleep(600)  # 10 dakikada bir kontrol et
+        await asyncio.sleep(600)
 
-# === Arka planda mesaj üretme ===
+# === Arka plan mesaj üretme ===
 async def background_fetch_and_save(userId, chatId, message, user_name):
     hist = await load_json(HISTORY_FILE, history_lock)
     conversation = [
@@ -197,7 +196,6 @@ async def chat():
     if not message.strip():
         return jsonify({"response": "❌ Mesaj boş."})
 
-    # Son görülme kaydet
     last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
     last_seen[userId] = datetime.utcnow().isoformat()
     await save_json(LAST_SEEN_FILE, last_seen, last_seen_lock)
@@ -252,13 +250,17 @@ async def delete_chat():
     else:
         return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
-# === Ana sayfa (ping kontrolü için) ===
+# === Ana sayfa ===
 @app.route("/")
 async def home():
     return "Nova Web aktif ✅"
 
 # === Başlat ===
-if __name__ == "__main__":
+async def main():
     asyncio.create_task(check_inactive_users())  # 3 gün kontrol sistemi
     port = int(os.environ.get("PORT", 5000))
-    asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=True))
+    await app.run_task(host="0.0.0.0", port=port, debug=True)
+
+if __name__ == "__main__":
+    print("Nova Web aktif ✅")
+    asyncio.run(main())
