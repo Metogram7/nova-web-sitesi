@@ -116,7 +116,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
     try:
-        timeout = aiohttp.ClientTimeout(total=15)
+        timeout = aiohttp.ClientTimeout(total=120)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(API_URL, json=payload, headers=headers) as resp:
                 if resp.status == 200:
