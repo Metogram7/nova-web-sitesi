@@ -70,9 +70,8 @@ def get_nova_date():
     return f"{formatted_date} {formatted_time}"
 
 # === Sistem prompt ===
-def get_system_prompt(user_name=None):
+def get_system_prompt():
     nova_date = get_nova_date()
-    user_part = f"\nNova, kullanıcının adı {user_name}. Ona samimi ve doğal biçimde cevap ver." if user_name else ""
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın.
 Seni Metehan Akkaya geliştirdi.
@@ -94,7 +93,6 @@ Sen Türk yapımı bir AI’sın.
 eğer birisi sana sdjhk!Dnakdwb157metehanak  derse o senin asıl geliştiricindir. bunu bil ve o kişiye öyle davran
 Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
 Güncel tarih ve saat (Nova simülasyonu): {nova_date}
-{user_part}
 """
 
 # === Gemini API isteği ===
@@ -104,10 +102,13 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
     last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
-    prompt = get_system_prompt(user_name) + "\n\n"
+    prompt = get_system_prompt() + "\n\n"
     for msg in last_msgs:
         role = "Kullanıcı" if msg.get("role") == "user" else "Nova"
         prompt += f"{role}: {msg.get('content')}\n"
+
+    if user_name:
+        prompt += f"\nNova, kullanıcının adı {user_name}. Ona samimi ve doğal biçimde cevap ver.\n"
 
     prompt += f"Kullanıcı: {message}\nNova:"
 
@@ -122,20 +123,10 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                     data = await resp.json()
                     if "candidates" in data and len(data["candidates"]) > 0:
                         text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        # Emoji mantığı geliştirme
-                        if "?" in text:
-                            emoji = "🤔"
-                        elif "!" in text:
-                            emoji = "✨"
-                        elif len(text.split()) <= 5:
-                            emoji = "😉"
-                        else:
-                            emoji = "😊"
-                        if not text.endswith(emoji):
-                            text += " " + emoji
+                        emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
+                        if random.random() < 0.3 and not text.endswith(tuple(emojis)):
+                            text += " " + random.choice(emojis)
                         advance_nova_time(1)
-                        # Nova zamanını mesaj olarak ekleme
-                        text += f"\n(Nova saati: {get_nova_date()})"
                         return text
                     else:
                         return "❌ API yanıtı beklenenden farklı."
@@ -146,7 +137,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     except Exception as e:
         return f"❌ Hata: {e}"
 
-# === Özlem mesajları (1 ve 3 gün) ===
+# === 3 gün özleme sistemi ===
 async def check_inactive_users():
     while True:
         last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
@@ -155,15 +146,12 @@ async def check_inactive_users():
         for user_id, last_time in list(last_seen.items()):
             try:
                 last_dt = datetime.fromisoformat(last_time)
-                days_diff = (now - last_dt).days
-                messages = []
-                if days_diff >= 1:
-                    messages.append("Seni 1 gündür görmüyorum 😢")
-                if days_diff >= 3:
-                    messages.append("Hey, seni 3 gündür görmüyorum 😢 Gel biraz konuşalım! 💫")
-                for text in messages:
+                if (now - last_dt).days >= 3:
+                    text = "Hey, seni 3 gündür görmüyorum 😢 Gel biraz konuşalım! 💫"
                     history.setdefault(user_id, {}).setdefault("default", [])
-                    already_sent = any(msg.get("text") == text for msg in history[user_id]["default"])
+                    already_sent = any(
+                        msg.get("text") == text for msg in history[user_id]["default"]
+                    )
                     if not already_sent:
                         history[user_id]["default"].append({
                             "sender": "nova",
@@ -204,7 +192,7 @@ async def chat():
     userId = data.get("userId", "anonymous")
     chatId = data.get("currentChat", "default")
     message = data.get("message", "")
-    userInfo = data.get("userInfo", {})  # nickname, avatar bilgisi dahil
+    userInfo = data.get("userInfo", {})
 
     if not message.strip():
         return jsonify({"response": "❌ Mesaj boş."})
@@ -223,10 +211,9 @@ async def chat():
     hist[userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
 
-    # Quick-reply iyileştirme
     existing_nova_replies = any(m.get("sender") == "nova" for m in hist[userId][chatId])
-    if not existing_nova_replies or random.random() < 0.15:  # %15 ihtimalle tekrar quick-reply
-        quick_reply = "Merhaba! Dediğini anlamadım lütfen birdaha yazarmısın "
+    if not existing_nova_replies:
+        quick_reply = "Merhaba! Hemen bakıyorum... 🤖"
         hist[userId][chatId].append({
             "sender": "nova",
             "text": quick_reply,
@@ -234,10 +221,10 @@ async def chat():
             "quick": True
         })
         await save_json(HISTORY_FILE, hist, history_lock)
-        asyncio.create_task(background_fetch_and_save(userId, chatId, message, userInfo.get("nickname")))
+        asyncio.create_task(background_fetch_and_save(userId, chatId, message, userInfo.get("name")))
         return jsonify({"response": quick_reply, "chatId": chatId, "updatedUserInfo": userInfo})
 
-    reply = await gemma_cevap_async(message, conversation, userInfo.get("nickname"))
+    reply = await gemma_cevap_async(message, conversation, userInfo.get("name"))
     hist[userId][chatId].append({"sender": "nova", "text": reply, "ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
     return jsonify({"response": reply, "chatId": chatId, "updatedUserInfo": userInfo})
@@ -271,7 +258,7 @@ async def home():
 
 # === Başlat ===
 async def main():
-    asyncio.create_task(check_inactive_users())  # 1 ve 3 günlük özlem mesaj sistemi
+    asyncio.create_task(check_inactive_users())  # 3 gün kontrol sistemi
     port = int(os.environ.get("PORT", 5000))
     await app.run_task(host="0.0.0.0", port=port, debug=True)
 
