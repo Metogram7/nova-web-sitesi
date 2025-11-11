@@ -102,16 +102,40 @@ eğer birisi sana sdjhk!Dnakdwb157metehanak  derse o senin asıl geliştiricindi
 Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
 Güncel tarih ve saat (Nova simülasyonu): {nova_date}
 Kullanıcı bir hata görürse metehanakkaya30@gmail.com adresine yazabilir. 💬
+webde arama yapman istenirse , denemeye çalış 
 """
 
 # === Gemini API isteği (hatasız + retry + session reuse) ===
+# === Nova'ya arama yeteneği ===
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     global session
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
-    # Son 5 mesajı dahil et
+    # Kullanıcı "ara:" veya "search:" ile başlıyorsa arama moduna geç
+    if message.lower().startswith(("ara:", "search:")):
+        query = message.split(":", 1)[1].strip()
+        if not query:
+            return "❌ Aranacak terim boş olamaz."
+        # /api/search endpoint’ini çağır
+        try:
+            async with session.post("http://localhost:5000/api/search", json={"query": query}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    results = data.get("results", [])
+                    if not results:
+                        return f"🔍 '{query}' için sonuç bulunamadı."
+                    reply = f"🔍 '{query}' için bazı sonuçlar:\n"
+                    for r in results[:3]:  # İlk 3 sonucu göster
+                        reply += f"- {r['title']}: {r['link']}\n"
+                    return reply
+                else:
+                    return "⚠️ Arama sırasında bir hata oluştu."
+        except Exception as e:
+            return f"⚠️ Arama isteği başarısız: {e}"
+
+    # Normal Gemini API akışı
     prompt = get_system_prompt() + "\n\n"
     for msg in conversation[-5:]:
         role = "Kullanıcı" if msg["role"] == "user" else "Nova"
@@ -140,11 +164,11 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                     await asyncio.sleep(2 * attempt)
                     continue
                 else:
-                    return f"Sunucudan beklenmeyen bir yanıt geldi ({resp.status}). Lütfen sonra tekrar dene veya metehanakkaya30@gmail.com adresine yaz. 📧"
+                    return f"Sunucudan beklenmeyen bir yanıt geldi ({resp.status})."
         except Exception as e:
             print(f"⚠️ API hata: {e}")
             await asyncio.sleep(2 * attempt)
-    return "Bir hata oluştu 😕 Lütfen birkaç dakika sonra tekrar dener misin? Eğer sorun devam ederse Metehan Akkaya’ya (metehanakkaya30@gmail.com) mail atabilirsin. 💬"
+    return "Bir hata oluştu 😕 Lütfen tekrar dene."
 
 # === Arka plan yanıt ===
 async def background_fetch_and_save(userId, chatId, message, user_name):
