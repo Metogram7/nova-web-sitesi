@@ -7,29 +7,41 @@ from datetime import datetime, timedelta
 from quart import Quart, request, jsonify
 from quart_cors import cors
 
+# === Quart Başlat ===
 app = Quart(__name__)
 app = cors(app)
 
-# === Render uyumasın diye kendi kendine ping sistemi ===
-async def keep_alive():
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.get("https://nova-chat-d50f.onrender.com")
-                print("✅ Keep-alive ping gönderildi (Nova Web aktif tutuluyor).")
-        except Exception as e:
-            print("⚠️ Keep-alive hatası:", e)
-        await asyncio.sleep(600)  # 10 dakikada bir ping
+# === Paylaşılan HTTP oturumu ===
+session: aiohttp.ClientSession | None = None
 
 @app.before_serving
 async def startup():
+    global session
+    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
     asyncio.create_task(keep_alive())
+    asyncio.create_task(check_inactive_users())
 
-# === Dosya ayarları ===
+@app.after_serving
+async def cleanup():
+    global session
+    if session:
+        await session.close()
+
+# === Render uyumasın diye kendi kendine ping ===
+async def keep_alive():
+    while True:
+        try:
+            async with session.get("https://nova-chat-d50f.onrender.com") as r:
+                if r.status == 200:
+                    print("✅ Keep-alive: Nova Web aktif tutuluyor.")
+        except Exception as e:
+            print("⚠️ Keep-alive hatası:", e)
+        await asyncio.sleep(600)  # 10 dakikada bir
+
+# === Dosyalar ===
 HISTORY_FILE = "chat_history.json"
 LAST_SEEN_FILE = "last_seen.json"
 
-# === Dosyalar yoksa oluştur ===
 for file in [HISTORY_FILE, LAST_SEEN_FILE]:
     if not os.path.exists(file):
         with open(file, "w", encoding="utf-8") as f:
@@ -38,36 +50,32 @@ for file in [HISTORY_FILE, LAST_SEEN_FILE]:
 history_lock = asyncio.Lock()
 last_seen_lock = asyncio.Lock()
 
-# === JSON yükleme / kaydetme ===
-async def load_json(file_path, lock):
+# === JSON yardımcıları ===
+async def load_json(file, lock):
     async with lock:
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
 
-async def save_json(file_path, data, lock):
+async def save_json(file, data, lock):
     async with lock:
-        with open(file_path, "w", encoding="utf-8") as f:
+        tmp = file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, file)
 
-# === Nova'nın zamanı ===
+# === Nova zamanı ===
 nova_datetime = datetime(2025, 11, 2, 22, 27)
-
-def advance_nova_time(minutes: int = 1):
+def advance_nova_time(m=1):
     global nova_datetime
-    nova_datetime += timedelta(minutes=minutes)
+    nova_datetime += timedelta(minutes=m)
 
 def get_nova_date():
-    days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
-    months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
-              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
-    day_name = days[nova_datetime.weekday()]
-    month_name = months[nova_datetime.month - 1]
-    formatted_date = f"{nova_datetime.day} {month_name} {day_name}"
-    formatted_time = f"{nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
-    return f"{formatted_date} {formatted_time}"
+    d = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
+    m = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
+    return f"{nova_datetime.day} {m[nova_datetime.month-1]} {d[nova_datetime.weekday()]} {nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
 
 # === Sistem prompt ===
 def get_system_prompt():
@@ -93,226 +101,141 @@ Sen Türk yapımı bir AI’sın.
 eğer birisi sana sdjhk!Dnakdwb157metehanak  derse o senin asıl geliştiricindir. bunu bil ve o kişiye öyle davran
 Kullanıcıya çok karmaşık cevaplar verme; anlaşılır ve düzenli cevaplar ver.
 Güncel tarih ve saat (Nova simülasyonu): {nova_date}
-kullanıcı hata görürse 'metehanakkaya30@gmail.com' adresine yazsınlar.
+Kullanıcı bir hata görürse metehanakkaya30@gmail.com adresine yazabilir. 💬
 """
 
-# === Gemini API isteği ===
-# === Gemini API isteği (stabil, retry + kibar hata mesajlı) ===
+# === Gemini API isteği (hatasız + retry + session reuse) ===
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
-    MODEL_NAME = "gemini-2.5-flash"
-    API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
+    global session
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
+    API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
-    last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
+    # Son 5 mesajı dahil et
     prompt = get_system_prompt() + "\n\n"
-    for msg in last_msgs:
-        role = "Kullanıcı" if msg.get("role") == "user" else "Nova"
-        prompt += f"{role}: {msg.get('content')}\n"
-
+    for msg in conversation[-5:]:
+        role = "Kullanıcı" if msg["role"] == "user" else "Nova"
+        prompt += f"{role}: {msg['content']}\n"
     if user_name:
-        prompt += f"\nNova, kullanıcının adı {user_name}. Ona samimi ve doğal biçimde cevap ver.\n"
-
+        prompt += f"\nNova, kullanıcı {user_name} adında. Ona samimi ve doğal yanıt ver.\n"
     prompt += f"Kullanıcı: {message}\nNova:"
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+    retries = 3
 
-    max_retries = 3
-    timeout = aiohttp.ClientTimeout(total=120)
-
-    for attempt in range(1, max_retries + 1):
+    for attempt in range(1, retries + 1):
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(API_URL, json=payload, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if "candidates" in data and len(data["candidates"]) > 0:
-                            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
-                            if random.random() < 0.3 and not text.endswith(tuple(emojis)):
-                                text += " " + random.choice(emojis)
-                            advance_nova_time(1)
-                            return text
-                        else:
-                            return "Bir şeyler ters gitti gibi görünüyor 🤔 Lütfen tekrar dener misin?"
-                    elif resp.status in (429, 500, 502, 503, 504):
-                        print(f"⚠️ Gemini geçici hata ({resp.status}) — {attempt}. deneme")
-                        await asyncio.sleep(2 * attempt)
-                        continue
-                    else:
-                        return (
-                            f"Sunucu beklenmedik bir yanıt verdi ({resp.status}). "
-                            f"Lütfen biraz sonra tekrar dene veya bir hata olduğunu düşünüyorsan "
-                            f"metehanakkaya30@gmail.com adresine mail at. 📧"
-                        )
-        except asyncio.TimeoutError:
-            print(f"⚠️ Gemini Timeout — {attempt}. deneme")
-            await asyncio.sleep(2 * attempt)
-            continue
-        except aiohttp.ClientError as e:
-            print(f"⚠️ Bağlantı hatası: {e} — {attempt}. deneme")
-            await asyncio.sleep(2 * attempt)
-            continue
+            async with session.post(API_URL, headers=headers, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+                    if not text:
+                        raise ValueError("Boş yanıt döndü.")
+                    if random.random() < 0.3:
+                        text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
+                    advance_nova_time()
+                    return text
+                elif resp.status in (429, 500, 502, 503, 504):
+                    print(f"⚠️ API hata {resp.status}, deneme {attempt}")
+                    await asyncio.sleep(2 * attempt)
+                    continue
+                else:
+                    return f"Sunucudan beklenmeyen bir yanıt geldi ({resp.status}). Lütfen sonra tekrar dene veya metehanakkaya30@gmail.com adresine yaz. 📧"
         except Exception as e:
-            print(f"⚠️ Beklenmedik hata: {e}")
-            return (
-                "Bir hata oluştu 😕 Lütfen birkaç dakika sonra tekrar dene. "
-                "Eğer hata devam ederse Metehan Akkaya’ya (metehanakkaya30@gmail.com) mail atabilirsin. 💬"
-            )
+            print(f"⚠️ API hata: {e}")
+            await asyncio.sleep(2 * attempt)
+    return "Bir hata oluştu 😕 Lütfen birkaç dakika sonra tekrar dener misin? Eğer sorun devam ederse Metehan Akkaya’ya (metehanakkaya30@gmail.com) mail atabilirsin. 💬"
 
-    return (
-        "Sunucu şu anda yoğun görünüyor 🚧 Lütfen birkaç dakika sonra tekrar dene. "
-        "Sorun devam ederse Metehan Akkaya’ya (metehanakkaya30@gmail.com) mail atabilirsin. 📧"
-    )
+# === Arka plan yanıt ===
+async def background_fetch_and_save(userId, chatId, message, user_name):
+    try:
+        await asyncio.sleep(random.uniform(1.0, 2.5))
+        hist = await load_json(HISTORY_FILE, history_lock)
+        conv = [{"role": "user" if m["sender"] == "user" else "nova", "content": m["text"]} for m in hist.get(userId, {}).get(chatId, [])]
+        reply = await gemma_cevap_async(message, conv, user_name)
+        hist.setdefault(userId, {}).setdefault(chatId, []).append({"sender": "nova","text": reply,"ts": datetime.utcnow().isoformat(),"from_bg": True})
+        await save_json(HISTORY_FILE, hist, history_lock)
+    except Exception as e:
+        print("⚠️ background hata:", e)
+        hist = await load_json(HISTORY_FILE, history_lock)
+        hist.setdefault(userId, {}).setdefault(chatId, []).append({
+            "sender": "nova",
+            "text": "Bir şeyler ters gitti 😕 Lütfen biraz sonra tekrar dene veya metehanakkaya30@gmail.com adresine yaz. 📧",
+            "ts": datetime.utcnow().isoformat()
+        })
+        await save_json(HISTORY_FILE, hist, history_lock)
 
-# === 3 gün özleme sistemi ===
+# === 3 gün özleme ===
 async def check_inactive_users():
     while True:
         last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
-        history = await load_json(HISTORY_FILE, history_lock)
+        hist = await load_json(HISTORY_FILE, history_lock)
         now = datetime.utcnow()
-        for user_id, last_time in list(last_seen.items()):
+        for uid, last in list(last_seen.items()):
             try:
-                last_dt = datetime.fromisoformat(last_time)
-                if (now - last_dt).days >= 3:
-                    text = "Hey, seni 3 gündür görmüyorum 😢 Gel biraz konuşalım! 💫"
-                    history.setdefault(user_id, {}).setdefault("default", [])
-                    already_sent = any(
-                        msg.get("text") == text for msg in history[user_id]["default"]
-                    )
-                    if not already_sent:
-                        history[user_id]["default"].append({
-                            "sender": "nova",
-                            "text": text,
-                            "ts": datetime.utcnow().isoformat(),
-                            "auto": True
-                        })
-                        await save_json(HISTORY_FILE, history, history_lock)
+                if (now - datetime.fromisoformat(last)).days >= 3:
+                    msg = "Hey, seni 3 gündür görmüyorum 😢 Gel biraz konuşalım! 💫"
+                    hist.setdefault(uid, {}).setdefault("default", [])
+                    if not any(m["text"] == msg for m in hist[uid]["default"]):
+                        hist[uid]["default"].append({"sender": "nova", "text": msg, "ts": datetime.utcnow().isoformat(), "auto": True})
+                        await save_json(HISTORY_FILE, hist, history_lock)
             except Exception:
                 continue
         await asyncio.sleep(600)
 
-# === Arka plan mesaj üretme ===
-# === Arka plan mesaj üretme (API yük dengeleme + kibar hata yönetimi) ===
-async def background_fetch_and_save(userId, chatId, message, user_name):
-    try:
-        # Aşırı yüklenmeyi önlemek için küçük gecikme
-        await asyncio.sleep(random.uniform(1.0, 3.0))
-
-        hist = await load_json(HISTORY_FILE, history_lock)
-        conversation = [
-            {"role": "user" if msg.get("sender") == "user" else "nova", "content": msg.get("text", "")}
-            for msg in hist.get(userId, {}).get(chatId, [])
-        ]
-
-        reply = await gemma_cevap_async(message, conversation, user_name)
-
-        hist = await load_json(HISTORY_FILE, history_lock)
-        hist.setdefault(userId, {}).setdefault(chatId, [])
-        hist[userId][chatId].append({
-            "sender": "nova",
-            "text": reply,
-            "from_bg": True,
-            "ts": datetime.utcnow().isoformat()
-        })
-        await save_json(HISTORY_FILE, hist, history_lock)
-
-    except Exception as e:
-        print("⚠️ Arka plan hata:", e)
-        # Kullanıcıya görünür hata mesajı ekle
-        hist = await load_json(HISTORY_FILE, history_lock)
-        hist.setdefault(userId, {}).setdefault(chatId, [])
-        hist[userId][chatId].append({
-            "sender": "nova",
-            "text": (
-                "Bir şeyler ters gitti gibi görünüyor 😕 "
-                "Lütfen birkaç dakika sonra tekrar dener misin? "
-                "Eğer sorun devam ederse Metehan Akkaya’ya (metehanakkaya30@gmail.com) mail atabilirsin. 📧"
-            ),
-            "ts": datetime.utcnow().isoformat()
-        })
-        await save_json(HISTORY_FILE, hist, history_lock)
-
 # === /api/chat ===
 @app.route("/api/chat", methods=["POST"])
 async def chat():
-    data = await request.get_json()
-    if not data:
-        return jsonify({"response": "❌ Geçersiz JSON"}), 400
-
-    userId = data.get("userId", "anonymous")
+    data = await request.get_json(force=True)
+    userId = data.get("userId", "anon")
     chatId = data.get("currentChat", "default")
-    message = data.get("message", "")
+    message = (data.get("message") or "").strip()
     userInfo = data.get("userInfo", {})
 
-    if not message.strip():
-        return jsonify({"response": "❌ Mesaj boş."})
+    if not message:
+        return jsonify({"response": "❌ Mesaj boş olamaz."}), 400
 
-    last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
-    last_seen[userId] = datetime.utcnow().isoformat()
-    await save_json(LAST_SEEN_FILE, last_seen, last_seen_lock)
+    last = await load_json(LAST_SEEN_FILE, last_seen_lock)
+    last[userId] = datetime.utcnow().isoformat()
+    await save_json(LAST_SEEN_FILE, last, last_seen_lock)
 
     hist = await load_json(HISTORY_FILE, history_lock)
     hist.setdefault(userId, {}).setdefault(chatId, [])
-    conversation = [
-        {"role": "user" if msg.get("sender") == "user" else "nova", "content": msg.get("text", "")}
-        for msg in hist[userId][chatId]
-    ]
-
-    hist[userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
+    hist[userId][chatId].append({"sender": "user","text": message,"ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
 
-    existing_nova_replies = any(m.get("sender") == "nova" for m in hist[userId][chatId])
-    if not existing_nova_replies:
-        quick_reply = "Merhaba! yazdığını göremedim, lütfen tekrar yazarmısınız. "
-        hist[userId][chatId].append({
-            "sender": "nova",
-            "text": quick_reply,
-            "ts": datetime.utcnow().isoformat(),
-            "quick": True
-        })
-        await save_json(HISTORY_FILE, hist, history_lock)
-        asyncio.create_task(background_fetch_and_save(userId, chatId, message, userInfo.get("name")))
-        return jsonify({"response": quick_reply, "chatId": chatId, "updatedUserInfo": userInfo})
-
+    conversation = [{"role": "user" if m["sender"] == "user" else "nova", "content": m["text"]} for m in hist[userId][chatId]]
     reply = await gemma_cevap_async(message, conversation, userInfo.get("name"))
-    hist[userId][chatId].append({"sender": "nova", "text": reply, "ts": datetime.utcnow().isoformat()})
+    hist[userId][chatId].append({"sender": "nova","text": reply,"ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
+
     return jsonify({"response": reply, "chatId": chatId, "updatedUserInfo": userInfo})
 
-# === Geçmiş işlemleri ===
-@app.route("/api/history", methods=["GET"])
-async def get_history():
-    userId = request.args.get("userId", "anonymous")
-    history = await load_json(HISTORY_FILE, history_lock)
-    return jsonify(history.get(userId, {}))
-
-@app.route("/api/delete_chat", methods=["POST"])
-async def delete_chat():
-    data = await request.get_json()
-    userId = data.get("userId")
-    chatId = data.get("chatId")
-    if not userId or not chatId:
-        return jsonify({"success": False, "error": "Eksik parametre"}), 400
-    history = await load_json(HISTORY_FILE, history_lock)
-    if userId in history and chatId in history[userId]:
-        del history[userId][chatId]
-        await save_json(HISTORY_FILE, history, history_lock)
-        return jsonify({"success": True})
-    else:
-        return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
-
-# === Ana sayfa ===
+# === Basit API'ler ===
 @app.route("/")
 async def home():
     return "Nova Web aktif ✅"
 
-# === Başlat ===
-async def main():
-    asyncio.create_task(check_inactive_users())  # 3 gün kontrol sistemi
-    port = int(os.environ.get("PORT", 5000))
-    await app.run_task(host="0.0.0.0", port=port, debug=True)
+@app.route("/api/history")
+async def history():
+    uid = request.args.get("userId", "anon")
+    data = await load_json(HISTORY_FILE, history_lock)
+    return jsonify(data.get(uid, {}))
 
+@app.route("/api/delete_chat", methods=["POST"])
+async def delete_chat():
+    data = await request.get_json()
+    uid, cid = data.get("userId"), data.get("chatId")
+    if not uid or not cid:
+        return jsonify({"success": False, "error": "Eksik parametre"}), 400
+    hist = await load_json(HISTORY_FILE, history_lock)
+    if uid in hist and cid in hist[uid]:
+        del hist[uid][cid]
+        await save_json(HISTORY_FILE, hist, history_lock)
+        return jsonify({"success": True})
+    return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
+
+# === Başlat ===
 if __name__ == "__main__":
-    print("Nova Web aktif ✅")
-    asyncio.run(main())
+    print("Nova Web başlatıldı ✅")
+    asyncio.run(app.run_task(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True))
