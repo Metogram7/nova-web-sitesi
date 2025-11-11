@@ -96,6 +96,7 @@ Güncel tarih ve saat (Nova simülasyonu): {nova_date}
 """
 
 # === Gemini API isteği ===
+# === Gemini API isteği (stabil, retry + kibar hata mesajlı) ===
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
     MODEL_NAME = "gemini-2.5-flash"
@@ -115,27 +116,53 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
-    try:
-        timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(API_URL, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if "candidates" in data and len(data["candidates"]) > 0:
-                        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
-                        if random.random() < 0.3 and not text.endswith(tuple(emojis)):
-                            text += " " + random.choice(emojis)
-                        advance_nova_time(1)
-                        return text
+    max_retries = 3
+    timeout = aiohttp.ClientTimeout(total=120)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(API_URL, json=payload, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if "candidates" in data and len(data["candidates"]) > 0:
+                            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                            emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
+                            if random.random() < 0.3 and not text.endswith(tuple(emojis)):
+                                text += " " + random.choice(emojis)
+                            advance_nova_time(1)
+                            return text
+                        else:
+                            return "Bir şeyler ters gitti gibi görünüyor 🤔 Lütfen tekrar dener misin?"
+                    elif resp.status in (429, 500, 502, 503, 504):
+                        print(f"⚠️ Gemini geçici hata ({resp.status}) — {attempt}. deneme")
+                        await asyncio.sleep(2 * attempt)
+                        continue
                     else:
-                        return "❌ API yanıtı beklenenden farklı."
-                else:
-                    return f"❌ API Hatası ({resp.status})"
-    except asyncio.TimeoutError:
-        return "❌ API yanıt vermiyor (timeout)"
-    except Exception as e:
-        return f"❌ Hata: {e}"
+                        return (
+                            f"Sunucu beklenmedik bir yanıt verdi ({resp.status}). "
+                            f"Lütfen biraz sonra tekrar dene veya bir hata olduğunu düşünüyorsan "
+                            f"metehanakkaya30@gmail.com adresine mail at. 📧"
+                        )
+        except asyncio.TimeoutError:
+            print(f"⚠️ Gemini Timeout — {attempt}. deneme")
+            await asyncio.sleep(2 * attempt)
+            continue
+        except aiohttp.ClientError as e:
+            print(f"⚠️ Bağlantı hatası: {e} — {attempt}. deneme")
+            await asyncio.sleep(2 * attempt)
+            continue
+        except Exception as e:
+            print(f"⚠️ Beklenmedik hata: {e}")
+            return (
+                "Bir hata oluştu 😕 Lütfen birkaç dakika sonra tekrar dene. "
+                "Eğer hata devam ederse Metehan Akkaya’ya (metehanakkaya30@gmail.com) mail atabilirsin. 💬"
+            )
+
+    return (
+        "Sunucu şu anda yoğun görünüyor 🚧 Lütfen birkaç dakika sonra tekrar dene. "
+        "Sorun devam ederse Metehan Akkaya’ya (metehanakkaya30@gmail.com) mail atabilirsin. 📧"
+    )
 
 # === 3 gün özleme sistemi ===
 async def check_inactive_users():
@@ -165,22 +192,45 @@ async def check_inactive_users():
         await asyncio.sleep(600)
 
 # === Arka plan mesaj üretme ===
+# === Arka plan mesaj üretme (API yük dengeleme + kibar hata yönetimi) ===
 async def background_fetch_and_save(userId, chatId, message, user_name):
-    hist = await load_json(HISTORY_FILE, history_lock)
-    conversation = [
-        {"role": "user" if msg.get("sender") == "user" else "nova", "content": msg.get("text", "")}
-        for msg in hist.get(userId, {}).get(chatId, [])
-    ]
-    reply = await gemma_cevap_async(message, conversation, user_name)
-    hist = await load_json(HISTORY_FILE, history_lock)
-    hist.setdefault(userId, {}).setdefault(chatId, [])
-    hist[userId][chatId].append({
-        "sender": "nova",
-        "text": reply,
-        "from_bg": True,
-        "ts": datetime.utcnow().isoformat()
-    })
-    await save_json(HISTORY_FILE, hist, history_lock)
+    try:
+        # Aşırı yüklenmeyi önlemek için küçük gecikme
+        await asyncio.sleep(random.uniform(1.0, 3.0))
+
+        hist = await load_json(HISTORY_FILE, history_lock)
+        conversation = [
+            {"role": "user" if msg.get("sender") == "user" else "nova", "content": msg.get("text", "")}
+            for msg in hist.get(userId, {}).get(chatId, [])
+        ]
+
+        reply = await gemma_cevap_async(message, conversation, user_name)
+
+        hist = await load_json(HISTORY_FILE, history_lock)
+        hist.setdefault(userId, {}).setdefault(chatId, [])
+        hist[userId][chatId].append({
+            "sender": "nova",
+            "text": reply,
+            "from_bg": True,
+            "ts": datetime.utcnow().isoformat()
+        })
+        await save_json(HISTORY_FILE, hist, history_lock)
+
+    except Exception as e:
+        print("⚠️ Arka plan hata:", e)
+        # Kullanıcıya görünür hata mesajı ekle
+        hist = await load_json(HISTORY_FILE, history_lock)
+        hist.setdefault(userId, {}).setdefault(chatId, [])
+        hist[userId][chatId].append({
+            "sender": "nova",
+            "text": (
+                "Bir şeyler ters gitti gibi görünüyor 😕 "
+                "Lütfen birkaç dakika sonra tekrar dener misin? "
+                "Eğer sorun devam ederse Metehan Akkaya’ya (metehanakkaya30@gmail.com) mail atabilirsin. 📧"
+            ),
+            "ts": datetime.utcnow().isoformat()
+        })
+        await save_json(HISTORY_FILE, hist, history_lock)
 
 # === /api/chat ===
 @app.route("/api/chat", methods=["POST"])
@@ -213,7 +263,7 @@ async def chat():
 
     existing_nova_replies = any(m.get("sender") == "nova" for m in hist[userId][chatId])
     if not existing_nova_replies:
-        quick_reply = "Merhaba! Hemen bakıyorum... 🤖"
+        quick_reply = "Merhaba! yazdığını göremedim, lütfen tekrar yazarmısınız. "
         hist[userId][chatId].append({
             "sender": "nova",
             "text": quick_reply,
