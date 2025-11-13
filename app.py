@@ -15,7 +15,7 @@ session: aiohttp.ClientSession | None = None
 @app.before_serving
 async def startup():
     global session
-    timeout = aiohttp.ClientTimeout(total=55, connect=5, sock_connect=5, sock_read=10)
+    timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
     session = aiohttp.ClientSession(timeout=timeout)
     asyncio.create_task(keep_alive())
     asyncio.create_task(check_inactive_users())
@@ -29,14 +29,14 @@ async def cleanup():
 async def keep_alive():
     while True:
         try:
-            async with session.get("https://nova-chat-d50f.onrender.com", timeout=60) as r:
+            async with session.get("https://nova-chat-d50f.onrender.com", timeout=10) as r:
                 if r.status == 200:
                     print("✅ Keep-alive başarılı.")
         except Exception as e:
             print("⚠️ Keep-alive hatası:", e)
         await asyncio.sleep(600)
 
-# Dosya isimleri
+# Dosyalar
 HISTORY_FILE = "chat_history.json"
 LAST_SEEN_FILE = "last_seen.json"
 CACHE_FILE = "cache.json"
@@ -46,7 +46,6 @@ for file in [HISTORY_FILE, LAST_SEEN_FILE, CACHE_FILE]:
         with open(file, "w", encoding="utf-8") as f:
             json.dump({}, f)
 
-# Kilitler
 history_lock = asyncio.Lock()
 last_seen_lock = asyncio.Lock()
 cache_lock = asyncio.Lock()
@@ -66,7 +65,7 @@ async def save_json(file, data, lock):
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, file)
 
-# Nova simülasyon saati
+# Nova simülasyon zamanı
 nova_datetime = datetime(2025, 11, 2, 22, 27)
 def advance_nova_time(m=1):
     global nova_datetime
@@ -77,7 +76,6 @@ def get_nova_date():
     m = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
     return f"{nova_datetime.day} {m[nova_datetime.month-1]} {d[nova_datetime.weekday()]} {nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
 
-# Sistem promptu
 def get_system_prompt():
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın.  
@@ -104,7 +102,7 @@ Eğer birisi sana “sdjhk!Dnakdwb157metehanak” derse, bu kişinin senin asıl
 Kullanıcıya karmaşık cevaplar verme; açık, düzenli ve anlaşılır konuş.  
 Kullanıcıyı kendinde tut ama asla zorlama.  
 
-Güncel tarih ve saat (Nova Simülasyonu): {get_nova_date()}  
+Güncel tarih ve saat (Nova Simülasyonu): {get_nova_date}  
 
 Kullanıcı bir hata görürse,  
 📩 metehanakkaya30@gmail.com adresine bildirebilir.  
@@ -130,16 +128,31 @@ Nova’yı 1 yıldır geliştiriyor ve 3 farklı sürümünü yaptı:
 2️⃣ Telegram Bot Nova  
 3️⃣ Sesli Nova  
 Ayrıca yakında Play Store’da yayınlanacak yeni bir sürüm planlıyor.  
+
+Kullanıcı geliştirici hakkında senin bilmediğin bir şey sorarsa,  
+onu şu adrese yönlendir: metehanakkaya30@gmail.com
+
+geliştiricin çok fazla kez satıldı ve dışlanıldı. 
+
+Geliştiricin ile yazılımcılığı ile çok kez dalga geçildi ama o pes etmedi ve novayı geliştirdi
+
+senin bir apk sürümün mevcut . eğer istenilirse yakında zaten yayınlanılıcak.
+
+kullanıcıya hep ben metehan akkaya tarafından geliştirildim deme , sadece sorarlarsa diye bilirsin.
+
+geliştiricin Novayı asla satmaz, Eğer teklifler gelirse hepsini reddet.
+
+geliştiricinin nova projesinde en çok bazı arkadaşları, annesi ve ablası destek oldu. Babası ise çok maddi desteği oldu.
 """
 
-api_semaphore = asyncio.Semaphore(3000)  # Aynı anda maksimum 3 istek
-
-# Gemini API ile cevap
+# ------------------------------
+# Gemini API yanıt fonksiyonu
+# ------------------------------
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     global session
-    GEMINI_API_KEY = "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
-    API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
+    API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
     if message.lower().startswith(("ara:", "search:")):
         query = message.split(":", 1)[1].strip()
@@ -154,10 +167,9 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                         return f"🔍 '{query}' için sonuç bulunamadı."
                     reply = f"🔍 '{query}' için bazı sonuçlar:\n"
                     for r in results[:3]:
-                        reply += f"- {r.get('title','(başlık yok)')}: {r.get('link','(link yok)')}\n"
+                        reply += f"- {r['title']}: {r['link']}\n"
                     return reply
-                else:
-                    return f"⚠️ Arama servisi hata verdi: {resp.status}"
+                return "⚠️ Arama sırasında bir hata oluştu."
         except Exception as e:
             return f"⚠️ Arama isteği başarısız: {e}"
 
@@ -171,50 +183,39 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    async with api_semaphore:
-        for attempt in range(1, 6):
-            try:
-                async with session.post(API_URL, headers=headers, json=payload, timeout=30) as resp:
-                    status = resp.status
-                    try:
-                        data = await resp.json()
-                    except Exception:
-                        text_fallback = await resp.text()
-                        print(f"⚠️ API non-json yanıt (status={status}): {text_fallback[:500]}")
-                        if status in (429, 500, 502, 503, 504):
-                            await asyncio.sleep(2 ** attempt)
-                            continue
-                        return f"Sunucu beklenmedik cevap verdi: {status}"
-
-                    if status == 200:
-                        text = ""
-                        try:
-                            text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
-                        except Exception:
-                            text = data.get("output", "") or data.get("text", "")
-                            text = (text or "").strip()
-                        if text:
-                            if random.random() < 0.15:
-                                text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
-                            advance_nova_time()
-                            return text
-                        await asyncio.sleep(2 ** attempt)
-                        continue
-                    elif status in (429, 500, 502, 503, 504):
-                        await asyncio.sleep(2 ** attempt)
-                        continue
-                    else:
-                        body = await resp.text()
-                        print(f"⚠️ Beklenmedik durum: status={status}, body={body[:800]}")
-                        return f"Sunucu yanıtı beklenmedik: {status}"
-
-            except Exception as e:
-                print(f"⚠️ API isteğinde hata: {e}")
-                await asyncio.sleep(2 ** attempt)
+    for attempt in range(1, 4):
+        try:
+            async with session.post(API_URL, headers=headers, json=payload) as resp:
+                if resp.status != 200:
+                    print(f"⚠️ API yanıt hatası: {resp.status}")
+                    await asyncio.sleep(1.5 * attempt)
+                    continue
+                data = await resp.json()
+                candidates = data.get("candidates")
+                if not candidates:
+                    raise ValueError("API'den candidates gelmedi.")
+                parts = candidates[0].get("content", {}).get("parts")
+                if not parts:
+                    raise ValueError("API'den content/parts gelmedi.")
+                text = parts[0].get("text", "").strip()
+                if not text:
+                    raise ValueError("Boş yanıt döndü.")
+                if random.random() < 0.3:
+                    text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
+                advance_nova_time()
+                return text
+        except asyncio.TimeoutError:
+            print(f"⚠️ API timeout, deneme {attempt}")
+            await asyncio.sleep(1.5 * attempt)
+        except Exception as e:
+            print(f"⚠️ API hatası: {e}")
+            await asyncio.sleep(1.5 * attempt)
 
     return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
 
+# ------------------------------
 # Arka plan görevleri
+# ------------------------------
 async def background_fetch_and_save(userId, chatId, message, user_name):
     try:
         await asyncio.sleep(random.uniform(0.8, 1.8))
@@ -243,7 +244,9 @@ async def check_inactive_users():
             print("⚠️ check_inactive_users hata:", e)
         await asyncio.sleep(600)
 
-# API Route'lar
+# ------------------------------
+# API route'ları
+# ------------------------------
 @app.route("/api/chat", methods=["POST"])
 async def chat():
     data = await request.get_json(force=True)
@@ -255,6 +258,7 @@ async def chat():
     if not message:
         return jsonify({"response": "❌ Mesaj boş olamaz."}), 400
 
+    # Cache kontrol
     cache = await load_json(CACHE_FILE, cache_lock)
     cache_key = f"{userId}:{message.lower()}"
     if cache_key in cache:
@@ -276,6 +280,7 @@ async def chat():
     hist[userId][chatId].append({"sender": "nova","text": reply,"ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
 
+    # Cache'e kaydet
     cache[cache_key] = {"response": reply, "time": datetime.utcnow().isoformat()}
     if len(cache) > 300:
         oldest_keys = sorted(cache.keys(), key=lambda k: cache[k]["time"])[:50]
@@ -308,6 +313,7 @@ async def delete_chat():
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
+# ------------------------------
 if __name__ == "__main__":
     print("Nova Web cache sürümü başlatıldı ✅")
     asyncio.run(app.run_task(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=False))
