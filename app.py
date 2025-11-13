@@ -36,7 +36,7 @@ async def keep_alive():
             print("⚠️ Keep-alive hatası:", e)
         await asyncio.sleep(600)
 
-# Dosyalar
+# Dosya yolları ve lock'lar
 HISTORY_FILE = "chat_history.json"
 LAST_SEEN_FILE = "last_seen.json"
 CACHE_FILE = "cache.json"
@@ -65,8 +65,9 @@ async def save_json(file, data, lock):
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, file)
 
-# Nova simülasyon zamanı
+# Nova simülasyonu zamanı
 nova_datetime = datetime(2025, 11, 2, 22, 27)
+
 def advance_nova_time(m=1):
     global nova_datetime
     nova_datetime += timedelta(minutes=m)
@@ -102,7 +103,7 @@ Eğer birisi sana “sdjhk!Dnakdwb157metehanak” derse, bu kişinin senin asıl
 Kullanıcıya karmaşık cevaplar verme; açık, düzenli ve anlaşılır konuş.  
 Kullanıcıyı kendinde tut ama asla zorlama.  
 
-Güncel tarih ve saat (Nova Simülasyonu): {get_nova_date}  
+Güncel tarih ve saat (Nova Simülasyonu): {get_nova_date()}  
 
 Kullanıcı bir hata görürse,  
 📩 metehanakkaya30@gmail.com adresine bildirebilir.  
@@ -132,29 +133,22 @@ Ayrıca yakında Play Store’da yayınlanacak yeni bir sürüm planlıyor.
 Kullanıcı geliştirici hakkında senin bilmediğin bir şey sorarsa,  
 onu şu adrese yönlendir: metehanakkaya30@gmail.com
 
-geliştiricin çok fazla kez satıldı ve dışlanıldı. 
+Geliştiricin çok fazla kez satıldı ve dışlanıldı.  
+Geliştiricin ile yazılımcılığı ile çok kez dalga geçildi ama o pes etmedi ve Novayı geliştirdi.
 
-Geliştiricin ile yazılımcılığı ile çok kez dalga geçildi ama o pes etmedi ve novayı geliştirdi
+Senin bir apk sürümün mevcut. Eğer istenilirse yakında zaten yayınlanılacak.
 
-senin bir apk sürümün mevcut . eğer istenilirse yakında zaten yayınlanılıcak.
+Kullanıcıya hep ben Metehan Akkaya tarafından geliştirildim deme, sadece sorarlarsa bilirsin.
 
-kullanıcıya hep ben metehan akkaya tarafından geliştirildim deme , sadece sorarlarsa diye bilirsin.
-
-geliştiricin Novayı asla satmaz, Eğer teklifler gelirse hepsini reddet.
-
-geliştiricinin nova projesinde en çok bazı arkadaşları, annesi ve ablası destek oldu. Babası ise çok maddi desteği oldu.
+Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası destek oldu. Babası ise çok maddi destek sağladı.
 """
 
 # ------------------------------
 # Gemini API yanıt fonksiyonu
 # ------------------------------
-# ------------------------------
-# Gemini API yanıt fonksiyonu (A-B-C-D planlı)
-# ------------------------------
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     global session
 
-    # API anahtarları
     API_KEYS = [
         os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",  # A plan
         "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",                               # B plan
@@ -181,7 +175,6 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
         except Exception as e:
             return f"⚠️ Arama isteği başarısız: {e}"
 
-    # Prompt oluştur
     prompt = get_system_prompt() + "\n\n"
     for msg in conversation[-5:]:
         role = "Kullanıcı" if msg["role"] == "user" else "Nova"
@@ -192,7 +185,6 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    # A-B-C planları
     for key_index, key in enumerate(API_KEYS):
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
         for attempt in range(1, 4):
@@ -223,12 +215,10 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                 print(f"⚠️ API {chr(65+key_index)} hatası: {e}")
                 await asyncio.sleep(1.5 * attempt)
 
-    # D plan: A-B-C başarısız olduysa session’ı resetle ve tekrar A planı dene
     print("⚠️ Tüm API planları başarısız, session sıfırlanıyor (D plan).")
     await session.close()
     timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
     session = aiohttp.ClientSession(timeout=timeout)
-    # D planda tekrar A planı dene
     try:
         headers = {"Content-Type": "application/json", "x-goog-api-key": API_KEYS[0]}
         async with session.post(API_URL, headers=headers, json=payload, timeout=15) as resp:
@@ -243,7 +233,6 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     except Exception as e:
         print(f"⚠️ D plan başarısız: {e}")
         return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
-
 
 # ------------------------------
 # Arka plan görevleri
@@ -290,7 +279,6 @@ async def chat():
     if not message:
         return jsonify({"response": "❌ Mesaj boş olamaz."}), 400
 
-    # Cache kontrol
     cache = await load_json(CACHE_FILE, cache_lock)
     cache_key = f"{userId}:{message.lower()}"
     if cache_key in cache:
@@ -312,7 +300,6 @@ async def chat():
     hist[userId][chatId].append({"sender": "nova","text": reply,"ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
 
-    # Cache'e kaydet
     cache[cache_key] = {"response": reply, "time": datetime.utcnow().isoformat()}
     if len(cache) > 300:
         oldest_keys = sorted(cache.keys(), key=lambda k: cache[k]["time"])[:50]
@@ -324,7 +311,7 @@ async def chat():
 
 @app.route("/")
 async def home():
-    return "Nova Web aktif ✅ (Cache sürümü)"
+    return "Nova Web aktif ✅ (Cache + API tam sürüm)"
 
 @app.route("/api/history")
 async def history():
@@ -347,5 +334,5 @@ async def delete_chat():
 
 # ------------------------------
 if __name__ == "__main__":
-    print("Nova Web cache sürümü başlatıldı ✅")
+    print("Nova Web tam sürümü başlatıldı ✅")
     asyncio.run(app.run_task(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=False))
