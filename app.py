@@ -149,6 +149,7 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     global session
 
+    # API anahtarları
     API_KEYS = [
         os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",  # A plan
         "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",                               # B plan
@@ -156,25 +157,9 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     ]
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-    if message.lower().startswith(("ara:", "search:")):
-        query = message.split(":", 1)[1].strip()
-        if not query:
-            return "❌ Aranacak terim boş olamaz."
-        try:
-            async with session.post("http://localhost:5000/api/search", json={"query": query}, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    results = data.get("results", [])
-                    if not results:
-                        return f"🔍 '{query}' için sonuç bulunamadı."
-                    reply = f"🔍 '{query}' için bazı sonuçlar:\n"
-                    for r in results[:3]:
-                        reply += f"- {r['title']}: {r['link']}\n"
-                    return reply
-                return "⚠️ Arama sırasında bir hata oluştu."
-        except Exception as e:
-            return f"⚠️ Arama isteği başarısız: {e}"
+    # Arama kısmı tamamen kaldırıldı, artık Gemini API üzerinden yanıt alınır
 
+    # Prompt oluştur
     prompt = get_system_prompt() + "\n\n"
     for msg in conversation[-5:]:
         role = "Kullanıcı" if msg["role"] == "user" else "Nova"
@@ -185,6 +170,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
+    # A-B-C planları
     for key_index, key in enumerate(API_KEYS):
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
         for attempt in range(1, 4):
@@ -215,6 +201,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                 print(f"⚠️ API {chr(65+key_index)} hatası: {e}")
                 await asyncio.sleep(1.5 * attempt)
 
+    # D plan: A-B-C başarısız olduysa session’ı resetle ve tekrar A planı dene
     print("⚠️ Tüm API planları başarısız, session sıfırlanıyor (D plan).")
     await session.close()
     timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
