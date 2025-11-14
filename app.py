@@ -12,7 +12,7 @@ import json
 import base64
 
 app = Quart(__name__)
-app = cors(app)
+app = cors(app, allow_origin="*")  # Test amaçlı, tüm kaynaklardan izin
 
 # Global session ve lock (session'ı eşzamanlı kullanımlara karşı korur)
 session: aiohttp.ClientSession | None = None
@@ -509,7 +509,7 @@ import smtplib
 from email.mime.text import MIMEText
 import asyncio
 
-app = Quart(__name__)
+
 
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
