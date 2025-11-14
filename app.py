@@ -485,23 +485,62 @@ async def subscribe():
 async def notify():
     data = await request.get_json()
     message = data.get("message")
-    sub = data.get("subscription")
-    if sub is None:
-        return jsonify({"status": "failed", "error": "Abonelik yok"}), 400
+    sent_count = 0
+    failed = []
+    for sub in subscriptions:
+        try:
+            webpush(
+                subscription_info=sub,
+                data=json.dumps({"title": "Nova", "body": message}),
+                vapid_private_key=base64.urlsafe_b64decode(VAPID_PRIVATE_KEY.encode('utf-8')),
+                vapid_claims=VAPID_CLAIMS
+            )
+            sent_count += 1
+        except WebPushException as e:
+            print("Push failed:", e)
+            failed.append(str(e))
+    status_msg = f"✅ {sent_count} bildirim gönderildi."
+    if failed:
+        status_msg += f" ⚠️ {len(failed)} başarısız."
+    return jsonify({"status": status_msg})
+
+from flask import Flask, request, jsonify
+import smtplib
+from email.mime.text import MIMEText
+
+app = Flask(__name__)
+
+# Mail ayarları
+SMTP_SERVER = 'smtp.gmail.com'
+SMTP_PORT = 587
+EMAIL_ADDRESS = 'nova.ai.v4.2@gmail.com'       # Gönderen mail
+EMAIL_PASSWORD = 'metehanakkaya190718'         # Gmail için app password kullan
+
+# Alıcı listesi
+RECIPIENTS = ['aelif7826@gmail.com']
+
+@app.route('/send-mail', methods=['POST'])
+def send_mail():
+    data = request.get_json()
+    message_text = data.get('message', 'Yeni mesaj!')
+
+    msg = MIMEText(message_text)
+    msg['Subject'] = 'Nova Bildirim'
+    msg['From'] = EMAIL_ADDRESS
 
     try:
-        webpush(
-            subscription_info=sub,
-            data=json.dumps({"title": "Nova", "body": message}),
-            vapid_private_key=base64.urlsafe_b64decode(VAPID_PRIVATE_KEY.encode()),
-            vapid_claims=VAPID_CLAIMS
-        )
-    except WebPushException as e:
-        print("Push failed:", e)
-        return jsonify({"status": "failed"}), 500
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            for recipient in RECIPIENTS:
+                msg['To'] = recipient
+                server.sendmail(EMAIL_ADDRESS, recipient, msg.as_string())
+        return jsonify({'status': 'Mail gönderildi!'})
+    except Exception as e:
+        return jsonify({'status': f'Hata: {e}'})
 
-    return jsonify({"status": "sent"})
-
+if __name__ == '__main__':
+    app.run(debug=True)
 
 
 # ------------------------------
