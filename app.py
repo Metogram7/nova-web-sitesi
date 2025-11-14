@@ -504,24 +504,21 @@ async def notify():
         status_msg += f" ⚠️ {len(failed)} başarısız."
     return jsonify({"status": status_msg})
 
-from flask import Flask, request, jsonify
+from quart import Quart, request, jsonify
 import smtplib
 from email.mime.text import MIMEText
 
-app = Flask(__name__)
+app = Quart(__name__)
 
-# Mail ayarları
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
-EMAIL_ADDRESS = 'nova.ai.v4.2@gmail.com'       # Gönderen mail
-EMAIL_PASSWORD = 'metehanakkaya190718'         # Gmail için app password kullan
-
-# Alıcı listesi
+EMAIL_ADDRESS = 'nova.ai.v4.2@gmail.com'
+EMAIL_PASSWORD = 'metehanakkaya190718'
 RECIPIENTS = ['aelif7826@gmail.com']
 
 @app.route('/send-mail', methods=['POST'])
-def send_mail():
-    data = request.get_json()
+async def send_mail():
+    data = await request.get_json()
     message_text = data.get('message', 'Yeni mesaj!')
 
     msg = MIMEText(message_text)
@@ -529,18 +526,21 @@ def send_mail():
     msg['From'] = EMAIL_ADDRESS
 
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            for recipient in RECIPIENTS:
-                msg['To'] = recipient
-                server.sendmail(EMAIL_ADDRESS, recipient, msg.as_string())
+        # SMTP işlemi blocking; async içinde thread ile çalıştırabiliriz
+        import asyncio
+        loop = asyncio.get_event_loop()
+        def send_email():
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls()
+                server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+                for recipient in RECIPIENTS:
+                    msg['To'] = recipient
+                    server.sendmail(EMAIL_ADDRESS, recipient, msg.as_string())
+        await loop.run_in_executor(None, send_email)
+
         return jsonify({'status': 'Mail gönderildi!'})
     except Exception as e:
         return jsonify({'status': f'Hata: {e}'})
-
-if __name__ == '__main__':
-    app.run(debug=True)
 
 
 # ------------------------------
