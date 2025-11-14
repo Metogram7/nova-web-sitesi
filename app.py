@@ -10,6 +10,13 @@ from quart import Quart, request, jsonify
 from pywebpush import webpush, WebPushException
 import json
 import base64
+import os
+import json
+import asyncio
+import smtplib
+from email.mime.text import MIMEText
+from quart import Quart, request, jsonify, send_from_directory
+from quart_cors import cors
 
 app = Quart(__name__)
 app = cors(app, allow_origin="*")  # Test amaçlı, tüm kaynaklardan izin
@@ -511,13 +518,29 @@ import asyncio
 
 
 
+# ------------------------------
+# Ayarlar
+# ------------------------------
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'nova.ai.v4.2@gmail.com'
 EMAIL_PASSWORD = 'metehanakkaya190718'
 RECIPIENTS = ['aelif7826@gmail.com']
 
-@app.route('/send-mail', methods=['POST'])
+app = Quart(__name__, static_folder="frontend", static_url_path="")
+app = cors(app, allow_origin="*")
+
+# ------------------------------
+# HTML dosyasını serve et
+# ------------------------------
+@app.route("/")
+async def index():
+    return await send_from_directory('frontend', 'notify.html')
+
+# ------------------------------
+# Mail gönderme endpoint
+# ------------------------------
+@app.route("/send-mail", methods=['POST'])
 async def send_mail():
     data = await request.get_json()
     message_text = data.get('message', 'Yeni mesaj!')
@@ -541,7 +564,6 @@ async def send_mail():
         return jsonify({'status': 'Mail gönderildi!'})
     except Exception as e:
         return jsonify({'status': f'Hata: {e}'})
-
 
 
 # ------------------------------
