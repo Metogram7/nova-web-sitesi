@@ -507,6 +507,7 @@ async def notify():
 from quart import Quart, request, jsonify
 import smtplib
 from email.mime.text import MIMEText
+import asyncio
 
 app = Quart(__name__)
 
@@ -525,22 +526,22 @@ async def send_mail():
     msg['Subject'] = 'Nova Bildirim'
     msg['From'] = EMAIL_ADDRESS
 
-    try:
-        # SMTP işlemi blocking; async içinde thread ile çalıştırabiliriz
-        import asyncio
-        loop = asyncio.get_event_loop()
-        def send_email():
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-                server.starttls()
-                server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-                for recipient in RECIPIENTS:
-                    msg['To'] = recipient
-                    server.sendmail(EMAIL_ADDRESS, recipient, msg.as_string())
-        await loop.run_in_executor(None, send_email)
+    loop = asyncio.get_event_loop()
 
+    def send():
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            for recipient in RECIPIENTS:
+                msg['To'] = recipient
+                server.sendmail(EMAIL_ADDRESS, recipient, msg.as_string())
+
+    try:
+        await loop.run_in_executor(None, send)
         return jsonify({'status': 'Mail gönderildi!'})
     except Exception as e:
         return jsonify({'status': f'Hata: {e}'})
+
 
 
 # ------------------------------
