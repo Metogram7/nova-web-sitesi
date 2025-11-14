@@ -485,16 +485,21 @@ async def subscribe():
 async def notify():
     data = await request.get_json()
     message = data.get("message")
-    for sub in subscriptions:
-        try:
-            webpush(
-                subscription_info=sub,
-                data=json.dumps({"title": "Nova", "body": message}),
-                vapid_private_key=base64.urlsafe_b64decode(VAPID_PRIVATE_KEY.encode()),
-                vapid_claims=VAPID_CLAIMS
-            )
-        except WebPushException as e:
-            print("Push failed:", e)
+    sub = data.get("subscription")
+    if sub is None:
+        return jsonify({"status": "failed", "error": "Abonelik yok"}), 400
+
+    try:
+        webpush(
+            subscription_info=sub,
+            data=json.dumps({"title": "Nova", "body": message}),
+            vapid_private_key=base64.urlsafe_b64decode(VAPID_PRIVATE_KEY.encode()),
+            vapid_claims=VAPID_CLAIMS
+        )
+    except WebPushException as e:
+        print("Push failed:", e)
+        return jsonify({"status": "failed"}), 500
+
     return jsonify({"status": "sent"})
 
 
