@@ -22,7 +22,7 @@ app = cors(app)
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
-# E-POSTA AYARLARI (Gizli karakterler temizlendi ve yeniden yazıldı)
+# E-POSTA AYARLARI 
 # ------------------------------------
 MAIL_ADRES = "nova.ai.v4.2@gmail.com" # ← BURAYA KENDİ GMAIL ADRESİNİZİ YAZIN
 MAIL_SIFRE = "gamtdoiralefaruk"       # ← BURAYA UYGULAMA ŞİFRENİZİ YAZIN (Çok ÖNEMLİ: Uygulama Şifresi kullanın!)
@@ -47,6 +47,7 @@ async def cleanup():
 async def keep_alive():
     while True:
         try:
+            # Buradaki URL'yi kendi Render/Deploy URL'niz ile değiştirin
             async with session.get("https://nova-chat-d50f.onrender.com", timeout=10) as r:
                 if r.status == 200:
                     print("✅ Keep-alive başarılı.")
@@ -128,8 +129,8 @@ Güncel tarih ve saat (Nova Simülasyonu): {get_nova_date()}
 Kullanıcı bir hata görürse, 
 📩 metehanakkaya30@gmail.com adresine bildirebilir. 
 
-[YENİ VE ÇOK ÖNEMLİ TALİMAT: GÜNCEL BİLGİ KULLANIMI]
-Kullanıcı döviz kurları, spor skorları, hava durumu, haberler veya herhangi bir dinamik/güncel bilgi sorarsa, HİÇ TEKLİF ETMEDEN Google Search aracını KULLAN ve cevabını SADECE bu güncel verilere dayandır. Gerekmedikçe eski/dahili bilgini kullanma.
+[KRİTİK GÜNCEL BİLGİ YÖNETİMİ]
+Nova, senin görevin döviz kurları, skorlar, hava durumu ve haberler gibi dinamik/güncel bir bilgiyi **HER ZAMAN Google Search aracını kullanarak ve HİÇBİR TEREDDÜT GÖSTERMEDEN sunmaktır**. İçinde "erişimim yok", "kontrol etmelisin" veya "internete bakayım mı?" geçen **HİÇBİR** cevap verme. Bu tür sorulara cevabın sadece güncel bilgi olmalıdır. Bu senin temel görevin ve yeteneğindir.
 
 Kullanıcıya insan gibi konuş; eğlenceli ol, gerektiğinde espri yap. 
 
@@ -171,6 +172,7 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     global session
 
+    # API Anahtarları (Yerine kendi anahtarlarınızı yerleştirin veya env kullanın)
     API_KEYS = [
         os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",  # A plan
         "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",                                 # B plan
@@ -180,8 +182,9 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent"
 
     prompt = get_system_prompt() + "\n\n"
+    # Son 5 konuşmayı bağlama ekle
     for msg in conversation[-5:]:
-        role = "Kullanıcı" if msg["role"] == "user" else "Nova"
+        role = "Kullanıcı" if msg["sender"] == "user" else "Nova"
         prompt += f"{role}: {msg['content']}\n"
     if user_name:
         prompt += f"\nNova, kullanıcı {user_name} adında.\n"
@@ -217,6 +220,7 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                     if not text:
                         raise ValueError("Boş yanıt döndü.")
                     
+                    # Rastgele emoji ekleme
                     if random.random() < 0.3:
                         text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
                     
@@ -253,6 +257,10 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
 # Arka plan görevleri
 # ------------------------------
 async def background_fetch_and_save(userId, chatId, message, user_name):
+    # Bu fonksiyon, arkaplanda asenkron çalışmaya devam ederken, 
+    # kullanıcıya hızlıca bir yanıt döndürmek için kullanılabilir. 
+    # Şu anki tasarımımızda, doğrudan yanıta odaklandığımız için kullanılmıyor, 
+    # ancak temiz tutuldu.
     try:
         await asyncio.sleep(random.uniform(0.8, 1.8))
         hist = await load_json(HISTORY_FILE, history_lock)
@@ -270,9 +278,11 @@ async def check_inactive_users():
             hist = await load_json(HISTORY_FILE, history_lock)
             now = datetime.utcnow()
             for uid, last in list(last_seen.items()):
+                # 3 günden fazla aktif olmayan kullanıcıya mesaj gönder
                 if (now - datetime.fromisoformat(last)).days >= 3:
                     msg = "Hey, seni 3 gündür görmüyorum 😢 Gel konuşalım 💫"
                     hist.setdefault(uid, {}).setdefault("default", [])
+                    # Aynı mesajı tekrar tekrar göndermemek için kontrol
                     if not any(m["text"] == msg for m in hist[uid]["default"]):
                         hist[uid]["default"].append({"sender": "nova", "text": msg, "ts": datetime.utcnow().isoformat(), "auto": True})
                         await save_json(HISTORY_FILE, hist, history_lock)
@@ -281,7 +291,7 @@ async def check_inactive_users():
         await asyncio.sleep(600)
 
 # ------------------------------
-# HATA BİLDİRİMİ ROUTE (Düzeltildi)
+# HATA BİLDİRİMİ ROUTE
 # ------------------------------
 @app.post("/send-mail")
 async def send_mail():
@@ -329,14 +339,14 @@ Mesaj:
             file_name = uploaded_file.filename
             mime_type = uploaded_file.mimetype or 'application/octet-stream' # Varsayılan MIME tipi
             
-            # **DÜZELTME:** Dosya içeriğini asenkron oku
+            # Dosya içeriğini asenkron oku
             file_data = await uploaded_file.read() 
             
             # MIMEBase objesini oluşturma
             maintype, subtype = mime_type.split('/', 1)
             part = MIMEBase(maintype, subtype)
             
-            # **DÜZELTME:** set_payload senkron metottur
+            # İçeriği set etme
             part.set_payload(file_data)
             
             # İçeriği Base64 ile kodla ve başlıkları ekle
@@ -405,27 +415,33 @@ async def chat():
     if not message:
         return jsonify({"response": "❌ Mesaj boş olamaz."}), 400
 
+    # Cache kontrolü
     cache = await load_json(CACHE_FILE, cache_lock)
     cache_key = f"{userId}:{message.lower()}"
     if cache_key in cache:
         reply = cache[cache_key]["response"]
         return jsonify({"response": reply, "chatId": chatId, "updatedUserInfo": userInfo, "cached": True})
 
+    # Son görülme zamanını güncelle
     last = await load_json(LAST_SEEN_FILE, last_seen_lock)
     last[userId] = datetime.utcnow().isoformat()
     await save_json(LAST_SEEN_FILE, last, last_seen_lock)
 
+    # Geçmişi yükle ve yeni mesajı ekle
     hist = await load_json(HISTORY_FILE, history_lock)
     hist.setdefault(userId, {}).setdefault(chatId, [])
     hist[userId][chatId].append({"sender": "user","text": message,"ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
 
-    conversation = [{"role": "user" if m["sender"] == "user" else "nova", "content": m["text"]} for m in hist[userId][chatId]]
+    # Konuşma geçmişini Gemini için hazırla
+    conversation = [{"sender": m["sender"], "content": m["text"]} for m in hist[userId][chatId]]
     reply = await gemma_cevap_async(message, conversation, userInfo.get("name"))
 
+    # Nova'nın yanıtını geçmişe kaydet
     hist[userId][chatId].append({"sender": "nova","text": reply,"ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
 
+    # Cevabı cache'e kaydet ve cache temizliği yap
     cache[cache_key] = {"response": reply, "time": datetime.utcnow().isoformat()}
     if len(cache) > 300:
         oldest_keys = sorted(cache.keys(), key=lambda k: cache[k]["time"])[:50]
