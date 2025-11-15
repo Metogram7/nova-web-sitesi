@@ -20,6 +20,11 @@ app = Quart(__name__)
 app = cors(app)
 
 session: aiohttp.ClientSession | None = None
+import firebase_admin
+from firebase_admin import credentials, messaging
+
+cred = credentials.Certificate('serviceAccountKey.json')
+firebase_admin.initialize_app(cred)
 
 # ------------------------------------
 # E-POSTA AYARLARI 
@@ -473,6 +478,46 @@ async def delete_chat():
         await save_json(HISTORY_FILE, hist, history_lock)
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
+
+def send_push_notification(token, title, body):
+    message = messaging.Message(
+        notification=messaging.Notification(
+            title=title,
+            body=body
+        ),
+        token=token
+    )
+
+    response = messaging.send(message)
+    print('Bildirim gönderildi:', response)
+
+cred = credentials.Certificate('serviceAccountKey.json')
+firebase_admin.initialize_app(cred)
+
+tokens = set()
+
+@app.route('/save-token', methods=['POST'])
+async def save_token():
+    data = await request.get_json()
+    token = data.get('token')
+    if token:
+        tokens.add(token)
+    return jsonify({'status':'ok'})
+
+@app.route('/send-message', methods=['POST'])
+async def send_message():
+    data = await request.get_json()
+    msg = data.get('message')
+    for token in tokens:
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title="Yeni Mesaj!",
+                body=msg
+            ),
+            token=token
+        )
+        messaging.send(message)
+    return jsonify({'status':'Mesaj gönderildi!'})
 
 # ------------------------------
 if __name__ == "__main__":
