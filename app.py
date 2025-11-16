@@ -20,11 +20,6 @@ app = Quart(__name__)
 app = cors(app)
 
 session: aiohttp.ClientSession | None = None
-import firebase_admin
-from firebase_admin import credentials, messaging
-
-cred = credentials.Certificate('serviceAccountKey.json')
-firebase_admin.initialize_app(cred)
 
 # ------------------------------------
 # E-POSTA AYARLARI 
@@ -410,6 +405,7 @@ Mesaj:
 # API route'ları
 # ------------------------------
 @app.route("/api/chat", methods=["POST"])
+@app.route("/api/chat", methods=["POST"])
 async def chat():
     data = await request.get_json(force=True)
     userId = data.get("userId", "anon")
@@ -425,36 +421,46 @@ async def chat():
     cache_key = f"{userId}:{message.lower()}"
     if cache_key in cache:
         reply = cache[cache_key]["response"]
-        return jsonify({"response": reply, "chatId": chatId, "updatedUserInfo": userInfo, "cached": True})
+        return jsonify({"response": reply, "cached": True})
 
-    # Son görülme zamanını güncelle
-    last = await load_json(LAST_SEEN_FILE, last_seen_lock)
-    last[userId] = datetime.utcnow().isoformat()
-    await save_json(LAST_SEEN_FILE, last, last_seen_lock)
+    # Tarih güncelle
+    last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
+    last_seen[userId] = datetime.utcnow().isoformat()
+    await save_json(LAST_SEEN_FILE, last_seen, last_seen_lock)
 
-    # Geçmişi yükle ve yeni mesajı ekle
+    # Sohbet geçmişi yükle
     hist = await load_json(HISTORY_FILE, history_lock)
-    hist.setdefault(userId, {}).setdefault(chatId, [])
-    hist[userId][chatId].append({"sender": "user","text": message,"ts": datetime.utcnow().isoformat()})
+    chat = hist.setdefault(userId, {}).setdefault(chatId, [])
+
+    # Kullanıcı mesajını ekle
+    chat.append({
+        "sender": "user",
+        "text": message,
+        "ts": datetime.utcnow().isoformat()
+    })
     await save_json(HISTORY_FILE, hist, history_lock)
 
-    # Konuşma geçmişini Gemini için hazırla
-    conversation = [{"sender": m["sender"], "content": m["text"]} for m in hist[userId][chatId]]
-    reply = await gemma_cevap_async(message, conversation, userInfo.get("name"))
+    # Nova cevabı üret
+    conv_for_prompt = [
+        {"sender": msg["sender"], "content": msg["text"]} 
+        for msg in chat
+    ]
 
-    # Nova'nın yanıtını geçmişe kaydet
-    hist[userId][chatId].append({"sender": "nova","text": reply,"ts": datetime.utcnow().isoformat()})
+    reply = await gemma_cevap_async(message, conv_for_prompt, userInfo.get("name"))
+
+    # Nova mesajını kaydet
+    chat.append({
+        "sender": "nova",
+        "text": reply,
+        "ts": datetime.utcnow().isoformat()
+    })
     await save_json(HISTORY_FILE, hist, history_lock)
 
-    # Cevabı cache'e kaydet ve cache temizliği yap
-    cache[cache_key] = {"response": reply, "time": datetime.utcnow().isoformat()}
-    if len(cache) > 300:
-        oldest_keys = sorted(cache.keys(), key=lambda k: cache[k]["time"])[:50]
-        for k in oldest_keys:
-            cache.pop(k, None)
+    # Cache kaydı
+    cache[cache_key] = {"response": reply}
     await save_json(CACHE_FILE, cache, cache_lock)
 
-    return jsonify({"response": reply, "chatId": chatId, "updatedUserInfo": userInfo, "cached": False})
+    return jsonify({"response": reply, "cached": False})
 
 @app.route("/")
 async def home():
@@ -479,45 +485,16 @@ async def delete_chat():
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
-def send_push_notification(token, title, body):
-    message = messaging.Message(
-        notification=messaging.Notification(
-            title=title,
-            body=body
-        ),
-        token=token
-    )
-
-    response = messaging.send(message)
-    print('Bildirim gönderildi:', response)
-
-cred = credentials.Certificate('serviceAccountKey.json')
-firebase_admin.initialize_app(cred)
-
-tokens = set()
-
-@app.route('/save-token', methods=['POST'])
-async def save_token():
-    data = await request.get_json()
-    token = data.get('token')
-    if token:
-        tokens.add(token)
-    return jsonify({'status':'ok'})
-
-@app.route('/send-message', methods=['POST'])
-async def send_message():
-    data = await request.get_json()
-    msg = data.get('message')
-    for token in tokens:
-        message = messaging.Message(
-            notification=messaging.Notification(
-                title="Yeni Mesaj!",
-                body=msg
-            ),
-            token=token
-        )
-        messaging.send(message)
-    return jsonify({'status':'Mesaj gönderildi!'})
+@app.route("/api/voice", methods=["POST"])
+async def voice():
+    file = (await request.files).get("file")
+    if not file:
+        return jsonify({"error": "Dosya bulunamadı"}), 400
+    
+    audio_bytes = await file.read()
+    # Burada Gemini API veya başka bir TTS/STT servisine gönderebilirsin
+    # Örnek: STT -> text -> gemma_cevap_async -> TTS -> audio dön
+    return jsonify({"reply": "Nova yanıtı (text olarak)"}), 200
 
 # ------------------------------
 if __name__ == "__main__":
