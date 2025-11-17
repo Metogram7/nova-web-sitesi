@@ -4,101 +4,56 @@ import asyncio
 import aiohttp
 import random
 from datetime import datetime, timedelta
-
-# E-posta/SMTP Kütüphane İçe Aktarımları
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
-from werkzeug.datastructures import FileStorage # Quart'ın dosya işleme objesi
-
 from quart import Quart, request, jsonify
 from quart_cors import cors
 
 app = Quart(__name__)
 app = cors(app)
 
-session: aiohttp.ClientSession | None = None
-
-# ------------------------------------
-# E-POSTA AYARLARI 
-# ------------------------------------
-MAIL_ADRES = "nova.ai.v4.2@gmail.com" # ← BURAYA KENDİ GMAIL ADRESİNİZİ YAZIN
-MAIL_SIFRE = "gamtdoiralefaruk"       # ← BURAYA UYGULAMA ŞİFRENİZİ YAZIN (Çok ÖNEMLİ: Uygulama Şifresi kullanın!)
-ALICI_ADRES = MAIL_ADRES              # ← E-postayı alacak adres
-# ------------------------------------
-
-
-@app.before_serving
-async def startup():
-    global session
-    timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
-    session = aiohttp.ClientSession(timeout=timeout)
-    asyncio.create_task(keep_alive())
-    asyncio.create_task(check_inactive_users())
-
-@app.after_serving
-async def cleanup():
-    global session
-    if session:
-        await session.close()
-
-async def keep_alive():
-    while True:
-        try:
-            # Buradaki URL'yi kendi Render/Deploy URL'niz ile değiştirin
-            async with session.get("https://nova-chat-d50f.onrender.com", timeout=10) as r:
-                if r.status == 200:
-                    print("✅ Keep-alive başarılı.")
-                else:
-                    print(f"⚠️ Keep-alive status: {r.status}")
-        except Exception as e:
-            print("⚠️ Keep-alive hatası:", e)
-        await asyncio.sleep(600)
-
-# Dosya yolları ve lock'lar
 HISTORY_FILE = "chat_history.json"
-LAST_SEEN_FILE = "last_seen.json"
-CACHE_FILE = "cache.json"
 
-for file in [HISTORY_FILE, LAST_SEEN_FILE, CACHE_FILE]:
-    if not os.path.exists(file):
-        with open(file, "w", encoding="utf-8") as f:
-            json.dump({}, f)
+if not os.path.exists(HISTORY_FILE):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump({}, f)
 
 history_lock = asyncio.Lock()
-last_seen_lock = asyncio.Lock()
-cache_lock = asyncio.Lock()
 
-async def load_json(file, lock):
-    async with lock:
+async def load_history():
+    async with history_lock:
         try:
-            with open(file, "r", encoding="utf-8") as f:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
 
-async def save_json(file, data, lock):
-    async with lock:
-        tmp = file + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, file)
+async def save_history(history):
+    async with history_lock:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
 
-# Nova simülasyonu zamanı
-nova_datetime = datetime(2025, 11, 2, 22, 27)
+# --- Nova'nın dahili tarihi ve saati ---
+nova_datetime = datetime(2025, 11, 2, 22, 27)  # Başlangıç: 2 Kasım 2025 Pazar 22:45
 
-def advance_nova_time(m=1):
+def advance_nova_time(minutes: int = 1):
+    """Nova'nın dahili saatini ilerletir"""
     global nova_datetime
-    nova_datetime += timedelta(minutes=m)
+    nova_datetime += timedelta(minutes=minutes)
 
 def get_nova_date():
-    d = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
-    m = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
-    return f"{nova_datetime.day} {m[nova_datetime.month-1]} {d[nova_datetime.weekday()]} {nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
+    """Nova'nın simülasyon tarih ve saatini döndürür"""
+    days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    
+    day_name = days[nova_datetime.weekday()]
+    month_name = months[nova_datetime.month - 1]
+    formatted_date = f"{nova_datetime.day} {month_name} {day_name}"
+    formatted_time = f"{nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
+    return f"{formatted_date} {formatted_time}"
 
+# --- Dinamik sistem prompt ---
 def get_system_prompt():
+    nova_date = get_nova_date()
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın. 
 Seni Metehan Akkaya geliştirdi. 
@@ -163,343 +118,147 @@ Senin bir apk sürümün mevcut. Eğer istenilirse yakında zaten yayınlanılac
 
 Kullanıcıya hep ben Metehan Akkaya tarafından geliştirildim deme, sadece sorarlarsa bilirsin.
 
-Kullanıcı kod, script, programlama örneği veya teknik bir çıktı istediğinde, **cevabını daima Markdown formatında bir kod bloğu (```language\n...code...```)** içinde ver. Örneğin, Python kodu için ```python, HTML için ```html kullan. Asla düz metin olarak kod parçacıkları gönderme.
-
 Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası destek oldu. Babası ise çok maddi destek sağladı.
 """
 
-# ------------------------------
-# Gemini API yanıt fonksiyonu
-# ------------------------------
+# --- Gemini API çağrısı ---
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
-    global session
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8"
+    MODEL_NAME = "gemini-2.5-flash"
+    API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
-    # API Anahtarları (Yerine kendi anahtarlarınızı yerleştirin veya env kullanın)
-    API_KEYS = [
-        os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",  # A plan
-        "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",                                 # B plan
-        "AIzaSyBqWOT3n3LA8hJBriMGFFrmanLfkIEjhr0"                                 # C plan
-    ]
-    # Web Araması için Google Search yeteneği olan güncel modeli kullanıyoruz
-    API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent"
-
+    last_msgs = conversation[-5:] if len(conversation) > 5 else conversation
     prompt = get_system_prompt() + "\n\n"
-    # Son 5 konuşmayı bağlama ekle
-    for msg in conversation[-5:]:
-        role = "Kullanıcı" if msg["sender"] == "user" else "Nova"
-        prompt += f"{role}: {msg['content']}\n"
+    for msg in last_msgs:
+        role = "Kullanıcı" if msg.get("role") == "user" else "Nova"
+        prompt += f"{role}: {msg.get('content')}\n"
+
     if user_name:
-        prompt += f"\nNova, kullanıcı {user_name} adında.\n"
+        prompt += f"\nNova, kullanıcının adı {user_name}. Ona samimi ve doğal biçimde cevap ver.\n"
+
     prompt += f"Kullanıcı: {message}\nNova:"
 
-    # İnternet erişimi (Google Search) için tools parametresi eklendi
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "tools": [{"google_search": {} }] 
-    }
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
-    for key_index, key in enumerate(API_KEYS):
-        headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-        for attempt in range(1, 4):
-            try:
-                async with session.post(API_URL, headers=headers, json=payload, timeout=15) as resp:
-                    if resp.status != 200:
-                        print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}")
-                        await asyncio.sleep(1.5 * attempt)
-                        continue
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(API_URL, json=payload, headers=headers) as resp:
+                if resp.status == 200:
                     data = await resp.json()
-                    candidates = data.get("candidates")
-                    if not candidates:
-                        raise ValueError("API'den candidates gelmedi.")
-                    parts = candidates[0].get("content", {}).get("parts")
-                    if not parts:
-                        # Eğer model araç kullanıyorsa ve yanıt veremiyorsa, hatayı yakala
-                        if data.get("promptFeedback", {}).get("blockReason"):
-                            raise ValueError(f"Yanıt engellendi: {data['promptFeedback']['blockReason']}")
-                        raise ValueError("API'den content/parts gelmedi.")
-                    
-                    text = parts[0].get("text", "").strip()
-                    if not text:
-                        raise ValueError("Boş yanıt döndü.")
-                    
-                    # Rastgele emoji ekleme
-                    if random.random() < 0.3:
-                        text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
-                    
-                    advance_nova_time()
-                    return text
-            except asyncio.TimeoutError:
-                print(f"⚠️ API {chr(65+key_index)} timeout, deneme {attempt}")
-                await asyncio.sleep(1.5 * attempt)
-            except Exception as e:
-                print(f"⚠️ API {chr(65+key_index)} hatası: {e}")
-                await asyncio.sleep(1.5 * attempt)
-
-    print("⚠️ Tüm API planları başarısız, session sıfırlanıyor (D plan).")
-    await session.close()
-    timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
-    session = aiohttp.ClientSession(timeout=timeout)
-    try:
-        headers = {"Content-Type": "application/json", "x-goog-api-key": API_KEYS[0]}
-        # D plan için de araçları ekleyelim
-        async with session.post(API_URL, headers=headers, json=payload, timeout=15) as resp:
-            data = await resp.json()
-            candidates = data.get("candidates")
-            parts = candidates[0].get("content", {}).get("parts")
-            text = parts[0].get("text", "").strip()
-            if random.random() < 0.3:
-                text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
-            advance_nova_time()
-            return text
+                    if "candidates" in data and len(data["candidates"]) > 0:
+                        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        emojis = ["😊", "😉", "🤖", "😄", "✨", "💬"]
+                        if random.random() < 0.3 and not text.endswith(tuple(emojis)):
+                            text += " " + random.choice(emojis)
+                        # Her mesajda 1 dakika ilerle
+                        advance_nova_time(1)
+                        return text
+                    else:
+                        return "❌ API yanıtı beklenenden farklı."
+                else:
+                    return f"❌ API Hatası ({resp.status})"
+    except asyncio.TimeoutError:
+        return "❌ API yanıt vermiyor (timeout)"
     except Exception as e:
-        print(f"⚠️ D plan başarısız: {e}")
-        return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
+        return f"❌ Hata: {e}"
 
-# ------------------------------
-# Arka plan görevleri
-# ------------------------------
+# --- Arka planda cevap kaydet ---
 async def background_fetch_and_save(userId, chatId, message, user_name):
-    # Bu fonksiyon, arkaplanda asenkron çalışmaya devam ederken, 
-    # kullanıcıya hızlıca bir yanıt döndürmek için kullanılabilir. 
-    # Şu anki tasarımımızda, doğrudan yanıta odaklandığımız için kullanılmıyor, 
-    # ancak temiz tutuldu.
-    try:
-        await asyncio.sleep(random.uniform(0.8, 1.8))
-        hist = await load_json(HISTORY_FILE, history_lock)
-        conv = [{"role": "user" if m["sender"] == "user" else "nova", "content": m["text"]} for m in hist.get(userId, {}).get(chatId, [])]
-        reply = await gemma_cevap_async(message, conv, user_name)
-        hist.setdefault(userId, {}).setdefault(chatId, []).append({"sender": "nova","text": reply,"ts": datetime.utcnow().isoformat(),"from_bg": True})
-        await save_json(HISTORY_FILE, hist, history_lock)
-    except Exception as e:
-        print("⚠️ background hata:", e)
-
-async def check_inactive_users():
-    while True:
-        try:
-            last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
-            hist = await load_json(HISTORY_FILE, history_lock)
-            now = datetime.utcnow()
-            for uid, last in list(last_seen.items()):
-                # 3 günden fazla aktif olmayan kullanıcıya mesaj gönder
-                if (now - datetime.fromisoformat(last)).days >= 3:
-                    msg = "Hey, seni 3 gündür görmüyorum 😢 Gel konuşalım 💫"
-                    hist.setdefault(uid, {}).setdefault("default", [])
-                    # Aynı mesajı tekrar tekrar göndermemek için kontrol
-                    if not any(m["text"] == msg for m in hist[uid]["default"]):
-                        hist[uid]["default"].append({"sender": "nova", "text": msg, "ts": datetime.utcnow().isoformat(), "auto": True})
-                        await save_json(HISTORY_FILE, hist, history_lock)
-        except Exception as e:
-            print("⚠️ check_inactive_users hata:", e)
-        await asyncio.sleep(600)
-
-# ------------------------------
-# HATA BİLDİRİMİ ROUTE
-# ------------------------------
-@app.post("/send-mail")
-async def send_mail():
-    # Dosya yüklemesini destekleyen form verilerini alma
-    form = await request.form
-    files = await request.files
-
-    # Zorunlu alanları çekme
-    username = form.get("username", "").strip()
-    user_email = form.get("user_email", "").strip()
-    message = form.get("message", "").strip()
-    
-    # İsteğe bağlı dosyayı çekme
-    uploaded_file: FileStorage = files.get("photo")
-
-    # Zorunlu alan kontrolü
-    if not username or not user_email or not message:
-        return jsonify({"status": "Kullanıcı Adı, Gmail Adresi ve Mesaj zorunludur."}), 400
-
-    # MIMEMultipart oluştur
-    msg = MIMEMultipart()
-    
-    # E-posta Başlıklarını Ayarlama
-    msg["Subject"] = f"[HATA BİLDİRİMİ] {username} ({user_email})'dan Yeni Bildirim"
-    msg["From"] = MAIL_ADRES
-    msg["To"] = ALICI_ADRES
-
-    # 1. Metin İçeriğini MIMEText olarak ekleme
-    email_body = f"""
-Kullanıcı Adı: {username}
-E-posta: {user_email}
-
-Mesaj:
----
-{message}
----
-"""
-    attachment_warning = ""
-
-    # 2. İsteğe bağlı dosyayı eklenti olarak ekleme
-    file_name = None
-    if uploaded_file and uploaded_file.filename:
-        try:
-            # Dosya adını ve MIME tipini alma
-            file_name = uploaded_file.filename
-            mime_type = uploaded_file.mimetype or 'application/octet-stream' # Varsayılan MIME tipi
-            
-            # Dosya içeriğini asenkron oku
-            file_data = await uploaded_file.read() 
-            
-            # MIMEBase objesini oluşturma
-            maintype, subtype = mime_type.split('/', 1)
-            part = MIMEBase(maintype, subtype)
-            
-            # İçeriği set etme
-            part.set_payload(file_data)
-            
-            # İçeriği Base64 ile kodla ve başlıkları ekle
-            encoders.encode_base64(part)
-            part.add_header(
-                'Content-Disposition',
-                f'attachment; filename="{file_name}"',
-            )
-            
-            # Eklentiyi mesaja ekle
-            msg.attach(part)
-            
-        except Exception as e:
-            # Hata oluşursa logla
-            print(f"Eklenti eklenirken hata: {e}")
-            attachment_warning = f"\n\n[UYARI: Eklenti yüklenirken bir hata oluştu: {type(e).__name__} - {e}]"
-            
-    # E-posta gövdesine varsa uyarıyı ekleyelim
-    final_email_body = email_body + attachment_warning
-    # Eğer önceden eklenmiş bir text/plain parçası varsa sil
-    new_payload = []
-    for p in msg.get_payload():
-        if p.get_content_type() != 'text/plain':
-            new_payload.append(p)
-            
-    msg.set_payload(new_payload)
-    msg.attach(MIMEText(final_email_body, 'plain', 'utf-8'))
-
-
-    # 3. Maili Gönderme
-    try:
-        # smtplib senkron olduğu için to_thread kullanıyoruz.
-        def send_sync_mail():
-            server = smtplib.SMTP("smtp.gmail.com", 587)
-            server.starttls()
-            server.login(MAIL_ADRES, MAIL_SIFRE)
-            server.sendmail(MAIL_ADRES, ALICI_ADRES, msg.as_string())
-            server.quit()
-            
-        await asyncio.to_thread(send_sync_mail)
-
-        status_msg = "Bildirim başarıyla gönderildi!"
-        if file_name and not attachment_warning:
-            status_msg += f" (Eklenti: {file_name} başarılı)"
-        elif attachment_warning:
-             status_msg += " (Eklenti yüklenirken hata oluştu, mail kontrol ediniz.)"
-            
-        return jsonify({"status": status_msg})
-
-    except Exception as e:
-        print(f"Mail gönderme hatası: {e}")
-        return jsonify({"status": f"Mail gönderilemedi. Sunucu/SMTP Hatası: {type(e).__name__}. Detay: {e}"}), 500
-
-
-# ------------------------------
-# API route'ları
-# ------------------------------
-@app.route("/api/chat", methods=["POST"])
-@app.route("/api/chat", methods=["POST"])
-async def chat():
-    data = await request.get_json(force=True)
-    userId = data.get("userId", "anon")
-    chatId = data.get("currentChat", "default")
-    message = (data.get("message") or "").strip()
-    userInfo = data.get("userInfo", {})
-
-    if not message:
-        return jsonify({"response": "❌ Mesaj boş olamaz."}), 400
-
-    # Cache kontrolü
-    cache = await load_json(CACHE_FILE, cache_lock)
-    cache_key = f"{userId}:{message.lower()}"
-    if cache_key in cache:
-        reply = cache[cache_key]["response"]
-        return jsonify({"response": reply, "cached": True})
-
-    # Tarih güncelle
-    last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
-    last_seen[userId] = datetime.utcnow().isoformat()
-    await save_json(LAST_SEEN_FILE, last_seen, last_seen_lock)
-
-    # Sohbet geçmişi yükle
-    hist = await load_json(HISTORY_FILE, history_lock)
-    chat = hist.setdefault(userId, {}).setdefault(chatId, [])
-
-    # Kullanıcı mesajını ekle
-    chat.append({
-        "sender": "user",
-        "text": message,
-        "ts": datetime.utcnow().isoformat()
-    })
-    await save_json(HISTORY_FILE, hist, history_lock)
-
-    # Nova cevabı üret
-    conv_for_prompt = [
-        {"sender": msg["sender"], "content": msg["text"]} 
-        for msg in chat
+    hist = await load_history()
+    conversation = [
+        {"role": "user" if msg.get("sender") == "user" else "nova", "content": msg.get("text", "")}
+        for msg in hist.get(userId, {}).get(chatId, [])
     ]
+    reply = await gemma_cevap_async(message, conversation, user_name)
 
-    reply = await gemma_cevap_async(message, conv_for_prompt, userInfo.get("name"))
-
-    # Nova mesajını kaydet
-    chat.append({
+    hist = await load_history()
+    hist.setdefault(userId, {}).setdefault(chatId, [])
+    hist[userId][chatId].append({
         "sender": "nova",
         "text": reply,
+        "from_bg": True,
         "ts": datetime.utcnow().isoformat()
     })
-    await save_json(HISTORY_FILE, hist, history_lock)
+    await save_history(hist)
 
-    # Cache kaydı
-    cache[cache_key] = {"response": reply}
-    await save_json(CACHE_FILE, cache, cache_lock)
+# --- Sohbet endpoint ---
+@app.route("/api/chat", methods=["POST"])
+async def chat():
+    data = await request.get_json()
+    if not data:
+        return jsonify({"response": "❌ Geçersiz JSON"}), 400
 
-    return jsonify({"response": reply, "cached": False})
+    userId = data.get("userId", "anonymous")
+    chatId = data.get("currentChat", "default")
+    message = data.get("message", "")
+    userInfo = data.get("userInfo", {})
 
-@app.route("/")
-async def home():
-    return "Nova Web aktif ✅ (Cache + API tam sürüm)"
+    if not message.strip():
+        return jsonify({"response": "❌ Mesaj boş."})
 
-@app.route("/api/history")
-async def history():
-    uid = request.args.get("userId", "anon")
-    data = await load_json(HISTORY_FILE, history_lock)
-    return jsonify(data.get(uid, {}))
+    hist = await load_history()
+    hist.setdefault(userId, {}).setdefault(chatId, [])
+
+    conversation = [
+        {"role": "user" if msg.get("sender") == "user" else "nova", "content": msg.get("text", "")}
+        for msg in hist[userId][chatId]
+    ]
+
+    hist[userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
+    await save_history(hist)
+
+    # İlk mesaj hızlı cevap
+    existing_nova_replies = any(m.get("sender") == "nova" for m in hist[userId][chatId])
+    if not existing_nova_replies:
+        quick_reply = "Merhaba! Hemen bakıyorum... 🤖"
+        hist[userId][chatId].append({
+            "sender": "nova",
+            "text": quick_reply,
+            "ts": datetime.utcnow().isoformat(),
+            "quick": True
+        })
+        await save_history(hist)
+
+        asyncio.create_task(background_fetch_and_save(userId, chatId, message, userInfo.get("name")))
+
+        return jsonify({
+            "response": quick_reply,
+            "chatId": chatId,
+            "updatedUserInfo": userInfo,
+            "note": "quick_reply_shown"
+        })
+
+    reply = await gemma_cevap_async(message, conversation, userInfo.get("name"))
+    hist[userId][chatId].append({"sender": "nova", "text": reply, "ts": datetime.utcnow().isoformat()})
+    await save_history(hist)
+
+    return jsonify({"response": reply, "chatId": chatId, "updatedUserInfo": userInfo})
+
+# --- Geçmiş ve silme endpoint ---
+@app.route("/api/history", methods=["GET"])
+async def get_history():
+    userId = request.args.get("userId", "anonymous")
+    history = await load_history()
+    return jsonify(history.get(userId, {}))
 
 @app.route("/api/delete_chat", methods=["POST"])
 async def delete_chat():
     data = await request.get_json()
-    uid, cid = data.get("userId"), data.get("chatId")
-    if not uid or not cid:
+    userId = data.get("userId")
+    chatId = data.get("chatId")
+    if not userId or not chatId:
         return jsonify({"success": False, "error": "Eksik parametre"}), 400
-    hist = await load_json(HISTORY_FILE, history_lock)
-    if uid in hist and cid in hist[uid]:
-        del hist[uid][cid]
-        await save_json(HISTORY_FILE, hist, history_lock)
+    history = await load_history()
+    if userId in history and chatId in history[userId]:
+        del history[userId][chatId]
+        await save_history(history)
         return jsonify({"success": True})
-    return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
+    else:
+        return jsonify({"success": False, "error": "Sohbet bulunamadı"}), 404
 
-@app.route("/api/voice", methods=["POST"])
-async def voice():
-    file = (await request.files).get("file")
-    if not file:
-        return jsonify({"error": "Dosya bulunamadı"}), 400
-    
-    audio_bytes = await file.read()
-    # Burada Gemini API veya başka bir TTS/STT servisine gönderebilirsin
-    # Örnek: STT -> text -> gemma_cevap_async -> TTS -> audio dön
-    return jsonify({"reply": "Nova yanıtı (text olarak)"}), 200
-
-# ------------------------------
+# --- Sunucu başlat ---
 if __name__ == "__main__":
-    print("Nova Web tam sürümü başlatıldı ✅")
-    # Quart'ı asyncio run_task ile başlatmak en iyisi
-    asyncio.run(app.run_task(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=False))
+    port = int(os.environ.get("PORT", 5000))
+    asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=True))
