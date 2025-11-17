@@ -173,89 +173,121 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 # ------------------------------
 # Gemini API yanıt fonksiyonu
 # ------------------------------
-async def gemma_cevap_async(message: str, conversation: list, user_name=None):
-    global session
+def get_system_prompt():
+    """Botun kişiliğini ve kuralarını tanımlayan metni döndürür."""
+    return "Sen Nova adında, yardımsever ve bilgili bir yapay zekasın. Yanıtların kısa ve öz, teknik konularda ise kod bloklarını mutlaka Markdown formatında kullan."
 
-    # API Anahtarları (Yerine kendi anahtarlarınızı yerleştirin veya env kullanın)
+def advance_nova_time():
+    """Zamanlayıcı veya loglama işlevinizi buraya ekleyin."""
+    pass
+
+# ÖNEMLİ: Bu fonksiyonun dışındaki ana kodunuzda aiohttp.ClientSession'ı başlatıp
+# bu fonksiyona parametre olarak (veya global olarak) aktardığınız varsayılmıştır.
+
+async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
+    """
+    Gemini API'ye çoklu-dönüş formatında istek gönderir, yanıtı ayrıştırır ve kod
+    bloklarının kaybolmamasını sağlar.
+    """
+    # GÜVENLİK NOTU: Lütfen bu anahtarları kendi geçerli anahtarlarınızla değiştirin
+    # veya Ortam Değişkenleri ile yükleyin (Örn: os.getenv("GEMINI_API_KEY_A")).
     API_KEYS = [
-        os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",  # A plan
-        "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",                                 # B plan
-        "AIzaSyBqWOT3n3LA8hJBriMGFFrmanLfkIEjhr0"                                 # C plan
+        os.getenv("GEMINI_API_KEY_A") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",  # A plan
+        os.getenv("GEMINI_API_KEY_B") or "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",  # B plan
+        os.getenv("GEMINI_API_KEY_C") or "AIzaSyBqWOT3n3LA8hJBriMGFFrmanLfkIEjhr0"   # C plan
     ]
-    # Web Araması için Google Search yeteneği olan güncel modeli kullanıyoruz
-    API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent"
+    
+    # DÜZELTME: Güncel ve kararlı model URL'si kullanılıyor
+    API_URL = "[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent)"
 
-    prompt = get_system_prompt() + "\n\n"
-    # Son 5 konuşmayı bağlama ekle
+    # YAPI DÜZELTMESİ: Konuşma geçmişini 'contents' listesi olarak oluşturma
+    contents = []
+    
+    # 1. Sistem Yönergesi (Konuşmayı başlatır)
+    system_prompt = get_system_prompt()
+    if system_prompt:
+        contents.append({"role": "user", "parts": [{"text": system_prompt}]})
+        # Modelin ilk mesajı alıp cevap vermesini simüle ediyoruz
+        contents.append({"role": "model", "parts": [{"text": "Anlaşıldı. Hazır olduğunuzda başlayabiliriz."}]}) 
+
+    # 2. Son 5 konuşmayı bağlama ekle (Doğru 'user'/'model' rolleriyle)
     for msg in conversation[-5:]:
-        role = "Kullanıcı" if msg["sender"] == "user" else "Nova"
-        prompt += f"{role}: {msg['content']}\n"
+        # API sadece 'user' ve 'model' rollerini kabul eder.
+        role = "user" if msg["sender"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg['content']}]})
+        
+    # 3. Güncel Kullanıcı Mesajı
+    current_message_text = f"Kullanıcı: {message}"
     if user_name:
-        prompt += f"\nNova, kullanıcı {user_name} adında.\n"
-    prompt += f"Kullanıcı: {message}\nNova:"
+        current_message_text = f"{user_name}: {message}"
+        
+    contents.append({"role": "user", "parts": [{"text": current_message_text}]})
+    
+    # 4. Modelin yanıtını beklediğimizi belirtiyoruz (API bazen bunu bekler)
+    # contents.append({"role": "model", "parts": []}) # Gerekli değilse kaldırılabilir
 
     # İnternet erişimi (Google Search) için tools parametresi eklendi
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "tools": [{"google_search": {} }] 
+        "contents": contents,
+        "config": {
+             "tools": [{"google_search": {} }]
+        }
     }
 
+    # Anahtar döngüsü ve deneme mekanizması (Exponential Backoff)
     for key_index, key in enumerate(API_KEYS):
+        if not key:
+            print(f"⚠️ API Anahtarı {key_index + 1} eksik.")
+            continue
+            
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+        
         for attempt in range(1, 4):
             try:
                 async with session.post(API_URL, headers=headers, json=payload, timeout=15) as resp:
                     if resp.status != 200:
-                        print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}")
+                        print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}. Tekrar deneniyor.")
                         await asyncio.sleep(1.5 * attempt)
                         continue
+                        
                     data = await resp.json()
                     candidates = data.get("candidates")
+
                     if not candidates:
-                        raise ValueError("API'den candidates gelmedi.")
-                    parts = candidates[0].get("content", {}).get("parts")
-                    if not parts:
-                        # Eğer model araç kullanıyorsa ve yanıt veremiyorsa, hatayı yakala
+                        error_message = data.get("error", {}).get("message", "Bilinmeyen API Hatası.")
+                        raise ValueError(f"API'den yanıt gelmedi. Hata: {error_message}")
+                    
+                    # KOD BLOKLARINI DÜZELTME: Tüm metin parçalarını birleştiriyoruz
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    
+                    # Tüm metin parçalarını birleştirme. Bu, kod bloklarının kaybolmasını engeller.
+                    text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
+                    
+                    if not text:
+                        # Yanıt engellendi mi kontrol etme
                         if data.get("promptFeedback", {}).get("blockReason"):
                             raise ValueError(f"Yanıt engellendi: {data['promptFeedback']['blockReason']}")
-                        raise ValueError("API'den content/parts gelmedi.")
-                    
-                    text = parts[0].get("text", "").strip()
-                    if not text:
-                        raise ValueError("Boş yanıt döndü.")
-                    
+                        raise ValueError("API'den boş metin yanıtı döndü.")
+
                     # Rastgele emoji ekleme
                     if random.random() < 0.3:
                         text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
-                    
+                        
                     advance_nova_time()
                     return text
+                    
             except asyncio.TimeoutError:
                 print(f"⚠️ API {chr(65+key_index)} timeout, deneme {attempt}")
                 await asyncio.sleep(1.5 * attempt)
             except Exception as e:
-                print(f"⚠️ API {chr(65+key_index)} hatası: {e}")
+                print(f"⚠️ API {chr(65+key_index)} genel hatası: {e}")
                 await asyncio.sleep(1.5 * attempt)
 
-    print("⚠️ Tüm API planları başarısız, session sıfırlanıyor (D plan).")
-    await session.close()
-    timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
-    session = aiohttp.ClientSession(timeout=timeout)
-    try:
-        headers = {"Content-Type": "application/json", "x-goog-api-key": API_KEYS[0]}
-        # D plan için de araçları ekleyelim
-        async with session.post(API_URL, headers=headers, json=payload, timeout=15) as resp:
-            data = await resp.json()
-            candidates = data.get("candidates")
-            parts = candidates[0].get("content", {}).get("parts")
-            text = parts[0].get("text", "").strip()
-            if random.random() < 0.3:
-                text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
-            advance_nova_time()
-            return text
-    except Exception as e:
-        print(f"⚠️ D plan başarısız: {e}")
-        return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
+    print("⚠️ Tüm API planları başarısız.")
+    
+    # D Planı Session Reset'i yapılıp tekrar denenebilir, ancak genellikle başarılı bir
+    # oturum sıfırlaması olmadan tekrar denemek mantıklı değildir.
+    return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
 
 # ------------------------------
 # Arka plan görevleri
