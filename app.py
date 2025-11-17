@@ -172,7 +172,6 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     global session
 
-    # API Anahtarları
     API_KEYS = [
         os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",
         "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",
@@ -208,27 +207,29 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                     parts = candidates[0].get("content", {}).get("parts")
                     if not parts:
                         raise ValueError("API'den content/parts gelmedi.")
-                    
+
                     text = parts[0].get("text", "").strip()
 
                     # ----------------------------
-                    # İşte burası değişti:
-                    # Kod içeriyorsa otomatik triple backtick ile sar
-                    if "\n" in text or any(k in text for k in ["print(", "console.log(", "function ", "def "]):
-                        text = f"```python\n{text}\n```"
-                    # ----------------------------
+                    # Kod varsa açıklama + kod tek mesaj hâline getir
+                    # Örnek: "İşte sana basit, temiz ve çalışan bir kod:" + kod
+                    kod_bul = any(k in text for k in ["print(", "console.log(", "function ", "def "])
+                    if kod_bul:
+                        text = f"İşte sana basit, temiz ve çalışan bir kod:\n{text}"
 
+                    # Arada emoji ekleyebiliriz
                     if random.random() < 0.3:
                         text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
-                    
+
                     advance_nova_time()
                     return text
+
             except asyncio.TimeoutError:
                 await asyncio.sleep(1.5 * attempt)
             except Exception as e:
                 await asyncio.sleep(1.5 * attempt)
 
-    # D plan fallback
+    # Fallback
     await session.close()
     timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
     session = aiohttp.ClientSession(timeout=timeout)
@@ -240,17 +241,18 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
             parts = candidates[0].get("content", {}).get("parts")
             text = parts[0].get("text", "").strip()
 
-            # Kod içeriyorsa triple backtick ile sar
-            if "\n" in text or any(k in text for k in ["print(", "console.log(", "function ", "def "]):
-                text = f"```python\n{text}\n```"
+            kod_bul = any(k in text for k in ["print(", "console.log(", "function ", "def "])
+            if kod_bul:
+                text = f"İşte sana basit, temiz ve çalışan bir kod:\n{text}"
 
             if random.random() < 0.3:
                 text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
+
             advance_nova_time()
             return text
+
     except Exception as e:
         return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
-
 
 # ------------------------------
 # Arka plan görevleri
