@@ -172,17 +172,15 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 async def gemma_cevap_async(message: str, conversation: list, user_name=None):
     global session
 
-    # API Anahtarları (Yerine kendi anahtarlarınızı yerleştirin veya env kullanın)
+    # API Anahtarları
     API_KEYS = [
-        os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",  # A plan
-        "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",                                 # B plan
-        "AIzaSyBqWOT3n3LA8hJBriMGFFrmanLfkIEjhr0"                                 # C plan
+        os.getenv("GEMINI_API_KEY") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",
+        "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",
+        "AIzaSyBqWOT3n3LA8hJBriMGFFrmanLfkIEjhr0"
     ]
-    # Web Araması için Google Search yeteneği olan güncel modeli kullanıyoruz
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent"
 
     prompt = get_system_prompt() + "\n\n"
-    # Son 5 konuşmayı bağlama ekle
     for msg in conversation[-5:]:
         role = "Kullanıcı" if msg["sender"] == "user" else "Nova"
         prompt += f"{role}: {msg['content']}\n"
@@ -190,10 +188,9 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
         prompt += f"\nNova, kullanıcı {user_name} adında.\n"
     prompt += f"Kullanıcı: {message}\nNova:"
 
-    # İnternet erişimi (Google Search) için tools parametresi eklendi
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "tools": [{"google_search": {} }] 
+        "tools": [{"google_search": {}}]
     }
 
     for key_index, key in enumerate(API_KEYS):
@@ -202,7 +199,6 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
             try:
                 async with session.post(API_URL, headers=headers, json=payload, timeout=15) as resp:
                     if resp.status != 200:
-                        print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}")
                         await asyncio.sleep(1.5 * attempt)
                         continue
                     data = await resp.json()
@@ -211,47 +207,50 @@ async def gemma_cevap_async(message: str, conversation: list, user_name=None):
                         raise ValueError("API'den candidates gelmedi.")
                     parts = candidates[0].get("content", {}).get("parts")
                     if not parts:
-                        # Eğer model araç kullanıyorsa ve yanıt veremiyorsa, hatayı yakala
-                        if data.get("promptFeedback", {}).get("blockReason"):
-                            raise ValueError(f"Yanıt engellendi: {data['promptFeedback']['blockReason']}")
                         raise ValueError("API'den content/parts gelmedi.")
                     
                     text = parts[0].get("text", "").strip()
-                    if not text:
-                        raise ValueError("Boş yanıt döndü.")
-                    
-                    # Rastgele emoji ekleme
+
+                    # ----------------------------
+                    # İşte burası değişti:
+                    # Kod içeriyorsa otomatik triple backtick ile sar
+                    if "\n" in text or any(k in text for k in ["print(", "console.log(", "function ", "def "]):
+                        text = f"```python\n{text}\n```"
+                    # ----------------------------
+
                     if random.random() < 0.3:
                         text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
                     
                     advance_nova_time()
                     return text
             except asyncio.TimeoutError:
-                print(f"⚠️ API {chr(65+key_index)} timeout, deneme {attempt}")
                 await asyncio.sleep(1.5 * attempt)
             except Exception as e:
-                print(f"⚠️ API {chr(65+key_index)} hatası: {e}")
                 await asyncio.sleep(1.5 * attempt)
 
-    print("⚠️ Tüm API planları başarısız, session sıfırlanıyor (D plan).")
+    # D plan fallback
     await session.close()
     timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
     session = aiohttp.ClientSession(timeout=timeout)
     try:
         headers = {"Content-Type": "application/json", "x-goog-api-key": API_KEYS[0]}
-        # D plan için de araçları ekleyelim
         async with session.post(API_URL, headers=headers, json=payload, timeout=15) as resp:
             data = await resp.json()
             candidates = data.get("candidates")
             parts = candidates[0].get("content", {}).get("parts")
             text = parts[0].get("text", "").strip()
+
+            # Kod içeriyorsa triple backtick ile sar
+            if "\n" in text or any(k in text for k in ["print(", "console.log(", "function ", "def "]):
+                text = f"```python\n{text}\n```"
+
             if random.random() < 0.3:
                 text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
             advance_nova_time()
             return text
     except Exception as e:
-        print(f"⚠️ D plan başarısız: {e}")
         return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
+
 
 # ------------------------------
 # Arka plan görevleri
