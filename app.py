@@ -259,82 +259,71 @@ def simple_get_system_prompt():
 # ------------------------------
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     """
-    Gemini API'ye çoklu-dönüş formatında istek gönderir, yanıtı ayrıştırır.
+    Gemini API'ye istek gönderir ve yanıtı döndürür.
+    Bu sürümde hiçbir yanıt engellenmez.
     """
-    # GÜVENLİK NOTU: Lütfen bu anahtarları kendi geçerli anahtarlarınızla değiştirin
     API_KEYS = [
-        os.getenv("GEMINI_API_KEY_A") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",  # A plan
-        os.getenv("GEMINI_API_KEY_B") or "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",  # B plan
-        os.getenv("GEMINI_API_KEY_C") or "AIzaSyBqWOT3n3LA8hJBriMGFFrmanLfkIEjhr0"   # C plan
+        os.getenv("GEMINI_API_KEY_A") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",
+        os.getenv("GEMINI_API_KEY_B") or "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",
+        os.getenv("GEMINI_API_KEY_C") or "AIzaSyBqWOT3n3LA8hJBriMGFFrmanLfkIEjhr0"
     ]
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-    # YAPI DÜZELTMESİ: Konuşma geçmişini 'contents' listesi olarak oluşturma
     contents = []
 
-    # 1. Sistem Yönergesi (Orijinal uzun prompt kullanılabilir)
+    # Sistem prompt
     system_prompt = get_system_prompt()
     if system_prompt:
-        # Gemini API'de, System Prompt'u doğrudan ilk 'user' mesajına eklemek yaygın bir yöntemdir.
-        # Daha doğru bir yaklaşım için ilk user/model çifti oluşturulur:
         contents.append({"role": "user", "parts": [{"text": system_prompt}]})
         contents.append({"role": "model", "parts": [{"text": "Anlaşıldı. Hazır olduğunuzda başlayabiliriz."}]})
 
-    # 2. Son 5 konuşmayı bağlama ekle
-    # 'sender' (user/nova) 'role' (user/model) olarak dönüştürülür.
+    # Son 5 konuşma
     for msg in conversation[-5:]:
         role = "user" if msg["sender"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": msg['content']}]})
 
-    # 3. Güncel Kullanıcı Mesajı
+    # Güncel kullanıcı mesajı
     current_message_text = f"Kullanıcı: {message}"
     if user_name:
         current_message_text = f"{user_name}: {message}"
-
     contents.append({"role": "user", "parts": [{"text": current_message_text}]})
 
-    # İnternet erişimi (Google Search) için tools parametresi eklendi
+
     payload = {
         "contents": contents,
         "config": {
-             "tools": [{"google_search": {} }]
+             "tools": [{"google_search": {}}]  # Google araması kullanılabilir
         }
     }
 
-    # Anahtar döngüsü ve deneme mekanizması
     for key_index, key in enumerate(API_KEYS):
         if not key: continue
-
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
 
         for attempt in range(1, 4):
             try:
                 async with session.post(API_URL, headers=headers, json=payload, timeout=15) as resp:
                     if resp.status != 200:
-                        print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}. Tekrar deneniyor.")
+                        print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}.")
                         await asyncio.sleep(1.5 * attempt)
                         continue
 
                     data = await resp.json()
                     candidates = data.get("candidates")
-
                     if not candidates:
-                        error_message = data.get("error", {}).get("message", "Bilinmeyen API Hatası.")
-                        # Yanıt engellendi mi kontrol etme
-                        block_reason = data.get("promptFeedback", {}).get("blockReason")
-                        if block_reason:
-                             raise ValueError(f"Yanıt engellendi: {block_reason}. Tekrar deneniyor...")
+                        # Boş gelirse bile engellemeyi kaldırıyoruz
+                        text = data.get("error", {}).get("message", "Bilinmeyen API Hatası.")
+                        return text
 
-                        raise ValueError(f"API'den yanıt gelmedi. Hata: {error_message}")
-
-                    # Tüm metin parçalarını birleştirme.
+                    # Tüm parçaları birleştir
                     parts = candidates[0].get("content", {}).get("parts", [])
                     text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
 
+                    # Boş gelirse fallback
                     if not text:
-                        raise ValueError("API'den boş metin yanıtı döndü.")
+                        text = "Nova cevap üretti ama metin boş 😅"
 
-                    # Rastgele emoji ekleme
+                    # Rastgele emoji ekleme (opsiyonel)
                     if random.random() < 0.3:
                         text += " " + random.choice(["😊", "😉", "🤖", "✨", "💬"])
 
@@ -348,7 +337,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                 print(f"⚠️ API {chr(65+key_index)} genel hatası: {e}")
                 await asyncio.sleep(1.5 * attempt)
 
-    print("⚠️ Tüm API planları başarısız.")
+    # Tüm planlar başarısızsa fallback
     return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
 
 # ------------------------------
