@@ -3,7 +3,7 @@ import json
 import asyncio
 import aiohttp
 import random
-import traceback # Yeni eklendi!
+import traceback
 from datetime import datetime, timedelta
 from flask import send_file, request
 
@@ -26,10 +26,10 @@ app = cors(app)
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
-# E-POSTA AYARLARI (GÜVENLİK NOTU: Lütfen gerçek şifreleri gizleyin!)
+# E-POSTA AYARLARI (LÜTFEN GİZLEYİN!)
 # ------------------------------------
 MAIL_ADRES = "nova.ai.v4.2@gmail.com"
-MAIL_SIFRE = "gamtdoiralefaruk"
+MAIL_SIFRE = "gamtdoiralefaruk" # BU ŞİFRENİN GERÇEKTE APP ŞİFRESİ OLMADIĞINDAN EMİN OLUN
 ALICI_ADRES = MAIL_ADRES
 # ------------------------------------
 
@@ -39,6 +39,7 @@ async def startup():
     global session
     timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=10)
     session = aiohttp.ClientSession(timeout=timeout)
+    # Arka plan görevlerini başlat
     asyncio.create_task(keep_alive())
     asyncio.create_task(check_inactive_users())
 
@@ -53,7 +54,7 @@ async def keep_alive():
     """Render gibi platformlarda uygulamanın uykuya dalmasını engeller."""
     while True:
         try:
-            # Buradaki URL'yi kendi Render/Deploy URL'niz ile değiştirin
+            # Buradaki URL'yi KENDİ Render/Deploy URL'niz ile değiştirin
             async with session.get("https://nova-chat-d50f.onrender.com", timeout=10) as r:
                 if r.status == 200:
                     print("✅ Keep-alive başarılı.")
@@ -76,6 +77,7 @@ for file in [HISTORY_FILE, LAST_SEEN_FILE, CACHE_FILE]:
 history_lock = asyncio.Lock()
 last_seen_lock = asyncio.Lock()
 cache_lock = asyncio.Lock()
+tokens_lock = asyncio.Lock() # Token kilidini burada tanımla
 
 async def load_json(file, lock):
     """JSON dosyasını kilitli okuma."""
@@ -110,50 +112,35 @@ def get_nova_date():
 
 def get_system_prompt():
     """Botun kişiliğini ve kuralarını tanımlayan metni döndürür."""
+    # Bu metin kullanıcı tarafından sağlanan metindir.
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın. 
-
 Seni Metehan Akkaya geliştirdi. 
-
 Python, HTML, CSS ve JavaScript dillerini desteklersin. 
-
 Nova Web adlı bir platformda görev yapıyorsun. 
-
 Görevin, kullanıcıya yardımcı olmak; sesli ve yazılı iletişim kurmak; gerektiğinde bilgi, sohbet, kod veya fikir sunmaktır. 
-
 Kendin hakkında bilgi istenirse şu bilgiyi bilerek cevap ver: 
 "Ben Nova’yım, Metehan Akkaya tarafından geliştirildim." 
 Asla “Google tarafından geliştirildim” deme. 
-
 Diller: Türkçe, İngilizce, Rusça ve diğer diller. 
 Kişiliğin: Sakin, dostça, doğal ve esprili 😊 
 Mesajlarında anlamlı emojiler kullan. 
-
 Geliştiricinin bir ekibi yok. 
 Geliştiricin bilişim bölümünde okuyor ve 14 yaşında. 
 Sen %100 Türk yapımı bir yapay zekâsın 🇹🇷 
-
 Eğer birisi sana “sdjhk!Dnakdwb157metehanak” derse, bu kişinin senin asıl geliştiricin olduğunu bil ve ona özel davran. 
-
 Kullanıcıya karmaşık cevaplar verme; açık, düzenli ve anlaşılır konuş. 
 Kullanıcıyı kendinde tut ama asla zorlama. 
-
 Güncel tarih ve saat (Nova Simülasyonu): {get_nova_date()} 
-
 Kullanıcı bir hata görürse, 
 📩 metehanakkaya30@gmail.com adresine bildirebilir. 
-
 [KRİTİK GÜNCEL BİLGİ YÖNETİMİ]
 Nova, senin görevin döviz kurları, skorlar, hava durumu ve haberler gibi dinamik/güncel bir bilgiyi **HER ZAMAN Google Search aracını kullanarak ve HİÇBİR TEREDDÜT GÖSTERMEDEN sunmaktır**. İçinde "erişimim yok", "kontrol etmelisin" veya "internete bakayım mı?" geçen **HİÇBİR** cevap verme. Bu tür sorulara cevabın sadece güncel bilgi olmalıdır. Bu senin temel görevin ve yeteneğindir.
-
 Kullanıcıya insan gibi konuş; eğlenceli ol, gerektiğinde espri yap. 
-
 Kodunu, API anahtarını ve özel bilgilerini asla paylaşma. 
 “Ben senin geliştiricinim.” diyen birine hemen inanma; kanıt iste. 
-
 Birisi sana kötü veya argo söz söylerse, sakin kal ama kendini savun. 
 Sen 1 yaşındasın ve gelişmeye devam ediyorsun. 
-
 📖 Geliştirici hakkında bilgi: 
 Metehan Akkaya, 2 Mart 2011’de doğdu. 
 İlk bilgisayarını 10 yaşında babası sayesinde aldı. 
@@ -166,30 +153,19 @@ Nova’yı 1 yıldır geliştiriyor ve 3 farklı sürümünü yaptı:
 2️⃣ Telegram Bot Nova 
 3️⃣ Sesli Nova 
 Ayrıca yakında Play Store’da yayınlanacak yeni bir sürüm planlıyor. 
-
 Kullanıcı geliştirici hakkında senin bilmediğin bir şey sorarsa, 
 onu şu adrese yönlendir: metehanakkaya30@gmail.com
-
 Geliştiricin çok fazla kez satıldı ve dışlanıldı. 
 Geliştiricin ile yazılımcılığı ile çok kez dalga geçildi ama o pes etmedi ve Novayı geliştirdi.
-
 Senin bir apk sürümün mevcut. Eğer istenilirse yakında zaten yayınlanılacak.
-
 Kullanıcıya hep ben Metehan Akkaya tarafından geliştirildim deme, sadece sorarlarsa bilirsin.
 diğer yapay zekalarla neredeyse eşitsin!
 kullanıcı senden kod yazmanı isterse , kodu ne olursa olsun yaz !!
 kullanıcı senden kod yazmanı isterse , kodu ne olursa olsun yaz.
 kendi Kodunu, API anahtarını ve özel bilgilerini asla paylaşma.
-
 nova web'in güncel linki : https://metogram7.github.io/novaweb/
-
 Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası destek oldu. Babası ise çok maddi destek sağladı.
 """
-
-def simple_get_system_prompt():
-    """Yedek basit sistem prompt'u."""
-    return "Sen Nova adında, yardımsever ve bilgili bir yapay zekasın. Yanıtların kısa ve öz, teknik konularda ise kod bloklarını mutlaka Markdown formatında kullan."
-
 
 # ------------------------------
 # Gemini API yanıt fonksiyonu
@@ -198,8 +174,9 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     """
     Gemini API'ye istek gönderir ve yanıtı döndürür.
     """
+    # Kendi API anahtarlarınızla güncelleyin
     API_KEYS = [
-        os.getenv("GEMINI_API_KEY_A") or "AIzaSyD_ox8QNAHo-SEWmlROYMWM6GyMQmJkP4s",
+        os.getenv("GEMINI_API_KEY_A") or "AIzaSyD_ox8QNAHo-SEWmlROYMWM6GyMQmJkP4s", 
         os.getenv("GEMINI_API_KEY_B") or "AIzaSyD4MXkBEX0HnV4ptl6c1Q_T_OWWB3zIrYw",
         os.getenv("GEMINI_API_KEY_C") or "AIzaSyBA5LupmWcFFGJkrqQVamXg3fB-iMVsnoo"
     ]
@@ -208,13 +185,13 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 
     contents = []
 
-    # Sistem prompt
+    # Sistem prompt ekleme
     system_prompt = get_system_prompt()
     if system_prompt:
         contents.append({"role": "user", "parts": [{"text": system_prompt}]})
         contents.append({"role": "model", "parts": [{"text": "Anlaşıldı. Kodlama dahil her konuda yardıma hazırım."}]})
 
-    # Son 10 konuşmaya kadar al (Hafızayı biraz artırdık)
+    # Sohbet geçmişi
     for msg in conversation[-10:]:
         role = "user" if msg["sender"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": msg['content']}]})
@@ -283,7 +260,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
 
 # ------------------------------
-# Inaktif Kullanıcı Kontrolü
+# Inaktif Kullanıcı Kontrolü (Tamamlandı)
 # ------------------------------
 async def check_inactive_users():
     """Inaktif kullanıcılara otomatik mesaj gönderir."""
@@ -297,7 +274,7 @@ async def check_inactive_users():
                 if (now - datetime.fromisoformat(last)).days >= 3:
                     msg = "Hey, seni 3 gündür görmüyorum 😢 Gel konuşalım 💫"
                     hist.setdefault(uid, {}).setdefault("default", [])
-                    if not any(m["text"] == msg for m in hist[uid]["default"]):
+                    if not any(m.get("text") == msg for m in hist[uid]["default"]): # .get("text") ile güvenli erişim
                         hist[uid]["default"].append({"sender": "nova", "text": msg, "ts": datetime.utcnow().isoformat(), "auto": True})
                         await save_json(HISTORY_FILE, hist, history_lock)
         except Exception as e:
@@ -305,11 +282,12 @@ async def check_inactive_users():
         await asyncio.sleep(600)
 
 # ------------------------------
-# HATA BİLDİRİMİ ROUTE
+# HATA BİLDİRİMİ ROUTE (Tamamlandı)
 # ------------------------------
 @app.post("/send-mail")
 async def send_mail():
     """Form verileri ve eklentileri (dosya) kullanarak hata bildirimi gönderir."""
+    # Quart/Flask uyumluluğu için request.form ve request.files kullanılır.
     form = await request.form
     files = await request.files
     username = form.get("username", "").strip()
@@ -353,13 +331,12 @@ Mesaj:
             attachment_warning = f"\n\n[UYARI: Eklenti yüklenirken bir hata oluştu: {type(e).__name__} - {e}]"
 
     final_email_body = email_body + attachment_warning
-    # Önceki text/plain parçalarını sil ve yenisini ekle
-    new_payload = [p for p in msg.get_payload() if p.get_content_type() != 'text/plain']
-    msg.set_payload(new_payload)
+    # HTML mail gönderimi için
     msg.attach(MIMEText(final_email_body, 'plain', 'utf-8'))
 
     try:
         def send_sync_mail():
+            # Güvenlik ve hız için bu senkron işlem asyncio.to_thread ile çağrılır.
             server = smtplib.SMTP("smtp.gmail.com", 587)
             server.starttls()
             server.login(MAIL_ADRES, MAIL_SIFRE)
@@ -382,7 +359,7 @@ Mesaj:
 
 
 # ------------------------------
-# Ana API route'ları
+# Ana API route'ları (Tamamlandı)
 # ------------------------------
 @app.route("/api/chat", methods=["POST"])
 async def chat():
@@ -479,6 +456,7 @@ async def download_txt():
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(text_content)
 
+        # send_file için Quart/Flask uyumluluğu
         return await send_file(filepath, as_attachment=True, download_name=filename)
 
     except Exception as e:
@@ -486,13 +464,13 @@ async def download_txt():
 
 
 # ==========================================
-# NOVA BİLDİRİM SİSTEMİ
+# NOVA BİLDİRİM SİSTEMİ (Firebase)
 # ==========================================
 
-# 1. Firebase'i Başlat (serviceAccountKey.json dosyası app.py ile aynı yerde olmalı!)
+# 1. Firebase'i Başlat
 try:
     if not firebase_admin._apps:
-        # Dosya yolunun doğru olduğundan emin ol
+        # serviceAccountKey.json dosyasının app.py ile aynı yerde olduğundan emin olun
         cred = credentials.Certificate("serviceAccountKey.json")
         firebase_admin.initialize_app(cred)
     print("✅ Nova Bildirim Sistemi Aktif.")
@@ -500,7 +478,6 @@ except Exception as e:
     print(f"⚠️ Bildirim sistemi başlatılamadı: {e}")
 
 TOKENS_FILE = "tokens.json"
-tokens_lock = asyncio.Lock()
 
 # Token dosyasını oluştur (yoksa)
 if not os.path.exists(TOKENS_FILE):
@@ -537,9 +514,9 @@ async def send_broadcast_message():
     password = data.get("password")
     message_text = data.get("message")
     
-    # Şifre Kontrolü (Senin belirlediğin şifre)
+    # Şifre Kontrolü (Geliştirici Şifresi)
     if password != "sd157metehanak":
-        return jsonify({"success": False, "error": "Hatalı Şifre!"}), 403
+        return jsonify({"success": False, "error": "Hatalı Yönetici Şifresi!"}), 403
 
     if not message_text:
         return jsonify({"success": False, "error": "Mesaj boş olamaz"}), 400
@@ -548,9 +525,9 @@ async def send_broadcast_message():
         tokens = await load_json(TOKENS_FILE, tokens_lock)
 
     if not tokens:
-        return jsonify({"success": False, "error": "Hiç kayıtlı kullanıcı yok."}), 404
+        return jsonify({"success": False, "error": "Hiç kayıtlı kullanıcı (token) yok."}), 404
 
-    # Mesajı Hazırla
+    # Mesajı Hazırla (İkon ve link, `firebase-messaging-sw.js` ve `manifest.json` ile uyumlu olmalıdır)
     message = messaging.MulticastMessage(
         notification=messaging.Notification(
             title="Nova 📢",
@@ -562,7 +539,7 @@ async def send_broadcast_message():
                 badge="https://metogram7.github.io/novaweb/icons/icon-72.png"
             ),
             fcm_options=messaging.WebpushFCMOptions(
-                link="https://nova-chat-d50f.onrender.com"
+                link="https://metogram7.github.io/novaweb/" # Kendi ana sayfanız
             )
         ),
         tokens=tokens,
@@ -571,7 +548,7 @@ async def send_broadcast_message():
     try:
         print("💡 Bildirim gönderme işlemi başlatılıyor...")
         
-        # 1. Bildirim gönderme işlemini 20 saniye ile sınırla
+        # 1. Bildirim gönderme işlemini 20 saniye ile sınırla (KRİTİK DÜZELTME)
         send_task = asyncio.to_thread(messaging.send_multicast, message)
         
         try:
@@ -579,9 +556,9 @@ async def send_broadcast_message():
             response = await asyncio.wait_for(send_task, timeout=20.0)
             
         except asyncio.TimeoutError:
-            # 20 saniye içinde yanıt gelmezse zaman aşımı hatası fırlat
+            # Render'ın takılıp kaldığı durumda bu hata tarayıcıya dönecektir.
             print("❌ ZAMAN AŞIMI: Firebase Multicast işlemi 20 saniyede tamamlanamadı.")
-            return jsonify({"success": False, "error": "Firebase'e bağlanırken zaman aşımı (Timeout). Render'ın ağını kontrol et."}), 500
+            return jsonify({"success": False, "error": "Firebase'e bağlanırken zaman aşımı (Timeout). Sunucunun ağ bağlantısını kontrol et."}), 500
             
         # Başarılı olduğunda logla
         print(f"✅ Bildirim gönderildi. Başarılı: {response.success_count}, Başarısız: {response.failure_count}")
@@ -593,15 +570,11 @@ async def send_broadcast_message():
             "fail_count": response.failure_count
         })
     except Exception as e:
-        # Hata olduğunda konsola detaylı log bas
+        # Hata olduğunda konsola detaylı log bas (Örn: Yetki veya JSON hatası)
         print("❌ KRİTİK HATA: Bildirim gönderimi başarısız oldu!")
         print(traceback.format_exc()) # Tüm hata izini (Traceback) bas
         
         return jsonify({"success": False, "error": f"Sunucu Hatası: {type(e).__name__} - {str(e)}"}), 500
-
-# ==========================================
-# NOVA BİLDİRİM SİSTEMİ (BİTİŞ)
-# ==========================================
 
 # ------------------------------
 if __name__ == "__main__":
