@@ -5,7 +5,7 @@ import aiohttp
 import random
 from datetime import datetime, timedelta
 from flask import send_file, request
-
+import traceback
 # E-posta/SMTP Kütüphane İçe Aktarımları
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -642,13 +642,25 @@ async def send_broadcast_message():
     )
 
     try:
-        # Senkron işlemi asenkrona çevirerek gönder (Sunucuyu dondurmamak için)
+        print("💡 Bildirim gönderme işlemi başlatılıyor...")
+        # Senkron işlemi asenkrona çevirerek gönder (Bu kısım takılıyor olabilir)
         response = await asyncio.to_thread(messaging.send_multicast, message)
+        
+        # Başarılı olduğunda logla
+        print(f"✅ Bildirim gönderildi. Başarılı: {response.success_count}, Başarısız: {response.failure_count}")
+
         return jsonify({
             "success": True, 
             "sent_count": response.success_count, 
             "fail_count": response.failure_count
         })
+    except Exception as e:
+        # Hata olduğunda konsola detaylı log bas
+        print("❌ KRİTİK HATA: Bildirim gönderimi başarısız oldu!")
+        print(traceback.format_exc()) # Tüm hata izini (Traceback) bas
+        
+        # Orijinal hata yanıtını döndür
+        return jsonify({"success": False, "error": f"Sunucu Hatası: {type(e).__name__} - {str(e)}"}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
