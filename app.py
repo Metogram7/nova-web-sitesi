@@ -5,7 +5,12 @@ import aiohttp
 import random
 import traceback
 from datetime import datetime, timedelta
-from flask import send_file, request
+
+# Flask importlarını Quart ile çakışmaması için düzenledik
+# Quart, Flask ile uyumlu send_file fonksiyonuna sahiptir
+from quart import Quart, request, jsonify, send_file
+from quart_cors import cors
+from werkzeug.datastructures import FileStorage
 
 # E-posta/SMTP Kütüphane İçe Aktarımları
 import smtplib
@@ -13,13 +18,11 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-from werkzeug.datastructures import FileStorage
 
-from quart import Quart, request, jsonify
-from quart_cors import cors
-# Mesaj gönderme
+# Firebase
 import firebase_admin
 from firebase_admin import credentials, messaging
+
 # --- Uygulama Başlatma ---
 app = Quart(__name__)
 app = cors(app)
@@ -55,6 +58,7 @@ async def keep_alive():
     while True:
         try:
             # Buradaki URL'yi KENDİ Render/Deploy URL'niz ile değiştirin
+            # Kendi kendine istek atarak uyanık kalır
             async with session.get("https://nova-chat-d50f.onrender.com", timeout=10) as r:
                 if r.status == 200:
                     print("✅ Keep-alive başarılı.")
@@ -68,16 +72,22 @@ async def keep_alive():
 HISTORY_FILE = "chat_history.json"
 LAST_SEEN_FILE = "last_seen.json"
 CACHE_FILE = "cache.json"
+TOKENS_FILE = "tokens.json" # Token dosyası tanımı
 
-for file in [HISTORY_FILE, LAST_SEEN_FILE, CACHE_FILE]:
+files_to_check = [HISTORY_FILE, LAST_SEEN_FILE, CACHE_FILE, TOKENS_FILE]
+for file in files_to_check:
     if not os.path.exists(file):
         with open(file, "w", encoding="utf-8") as f:
-            json.dump({}, f)
+            # Token dosyası liste, diğerleri obje (dict)
+            if file == TOKENS_FILE:
+                json.dump([], f)
+            else:
+                json.dump({}, f)
 
 history_lock = asyncio.Lock()
 last_seen_lock = asyncio.Lock()
 cache_lock = asyncio.Lock()
-tokens_lock = asyncio.Lock() # Token kilidini burada tanımla
+tokens_lock = asyncio.Lock()
 
 async def load_json(file, lock):
     """JSON dosyasını kilitli okuma."""
@@ -86,7 +96,7 @@ async def load_json(file, lock):
             with open(file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            return {}
+            return [] if file == TOKENS_FILE else {}
 
 async def save_json(file, data, lock):
     """JSON dosyasını atomik (geçici dosya ile) kilitli yazma."""
@@ -111,8 +121,7 @@ def get_nova_date():
     return f"{nova_datetime.day} {m[nova_datetime.month-1]} {d[nova_datetime.weekday()]} {nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
 
 def get_system_prompt():
-    """Botun kişiliğini ve kuralarını tanımlayan metni döndürür."""
-    # Bu metin kullanıcı tarafından sağlanan metindir.
+    """Botun kişiliğini ve kuralarını tanımlayan metin."""
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın. 
 Seni Metehan Akkaya geliştirdi. 
@@ -260,7 +269,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
 
 # ------------------------------
-# Inaktif Kullanıcı Kontrolü (Tamamlandı)
+# Inaktif Kullanıcı Kontrolü
 # ------------------------------
 async def check_inactive_users():
     """Inaktif kullanıcılara otomatik mesaj gönderir."""
@@ -274,7 +283,7 @@ async def check_inactive_users():
                 if (now - datetime.fromisoformat(last)).days >= 3:
                     msg = "Hey, seni 3 gündür görmüyorum 😢 Gel konuşalım 💫"
                     hist.setdefault(uid, {}).setdefault("default", [])
-                    if not any(m.get("text") == msg for m in hist[uid]["default"]): # .get("text") ile güvenli erişim
+                    if not any(m.get("text") == msg for m in hist[uid]["default"]): 
                         hist[uid]["default"].append({"sender": "nova", "text": msg, "ts": datetime.utcnow().isoformat(), "auto": True})
                         await save_json(HISTORY_FILE, hist, history_lock)
         except Exception as e:
@@ -282,12 +291,11 @@ async def check_inactive_users():
         await asyncio.sleep(600)
 
 # ------------------------------
-# HATA BİLDİRİMİ ROUTE (Tamamlandı)
+# HATA BİLDİRİMİ ROUTE
 # ------------------------------
 @app.post("/send-mail")
 async def send_mail():
     """Form verileri ve eklentileri (dosya) kullanarak hata bildirimi gönderir."""
-    # Quart/Flask uyumluluğu için request.form ve request.files kullanılır.
     form = await request.form
     files = await request.files
     username = form.get("username", "").strip()
@@ -319,7 +327,7 @@ Mesaj:
         try:
             file_name = uploaded_file.filename
             mime_type = uploaded_file.mimetype or 'application/octet-stream'
-            file_data = await uploaded_file.read()
+            file_data = uploaded_file.read() # Quart FileStorage read senkrondur
             maintype, subtype = mime_type.split('/', 1)
             part = MIMEBase(maintype, subtype)
             part.set_payload(file_data)
@@ -331,7 +339,6 @@ Mesaj:
             attachment_warning = f"\n\n[UYARI: Eklenti yüklenirken bir hata oluştu: {type(e).__name__} - {e}]"
 
     final_email_body = email_body + attachment_warning
-    # HTML mail gönderimi için
     msg.attach(MIMEText(final_email_body, 'plain', 'utf-8'))
 
     try:
@@ -359,7 +366,7 @@ Mesaj:
 
 
 # ------------------------------
-# Ana API route'ları (Tamamlandı)
+# Ana API route'ları
 # ------------------------------
 @app.route("/api/chat", methods=["POST"])
 async def chat():
@@ -432,13 +439,12 @@ async def delete_chat():
 
 @app.route("/api/voice", methods=["POST"])
 async def voice():
-    """Ses dosyasını işlemek için yer tutucu (STT/TTS entegrasyonu gerektirir)."""
-    file = (await request.files).get("file")
+    """Ses dosyasını işlemek için yer tutucu."""
+    files = await request.files
+    file = files.get("file")
     if not file:
         return jsonify({"error": "Dosya bulunamadı"}), 400
-
-    audio_bytes = await file.read()
-    # TO-DO: Ses dosyası burada STT (Speech-to-Text) servisine gönderilmeli
+    # audio_bytes = file.read() # Asenkron okuma gerekebilir
     return jsonify({"reply": "Nova yanıtı (text olarak)"}), 200
 
 @app.route("/download_txt", methods=["POST"])
@@ -453,11 +459,14 @@ async def download_txt():
         filename = f"nova_text_{int(datetime.now().timestamp())}.txt"
         filepath = f"/tmp/{filename}"
 
+        # /tmp yoksa oluştur (Her ortamda /tmp olmayabilir ama Render'da vardır)
+        if not os.path.exists("/tmp"):
+            os.makedirs("/tmp")
+
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(text_content)
 
-        # send_file için Quart/Flask uyumluluğu
-        return await send_file(filepath, as_attachment=True, download_name=filename)
+        return await send_file(filepath, as_attachment=True, attachment_filename=filename)
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -470,19 +479,11 @@ async def download_txt():
 # 1. Firebase'i Başlat
 try:
     if not firebase_admin._apps:
-        # serviceAccountKey.json dosyasının app.py ile aynı yerde olduğundan emin olun
         cred = credentials.Certificate("serviceAccountKey.json")
         firebase_admin.initialize_app(cred)
     print("✅ Nova Bildirim Sistemi Aktif.")
 except Exception as e:
     print(f"⚠️ Bildirim sistemi başlatılamadı: {e}")
-
-TOKENS_FILE = "tokens.json"
-
-# Token dosyasını oluştur (yoksa)
-if not os.path.exists(TOKENS_FILE):
-    with open(TOKENS_FILE, "w") as f:
-        json.dump([], f)
 
 @app.route("/api/subscribe", methods=["POST"])
 async def subscribe():
@@ -507,14 +508,70 @@ async def subscribe():
             
     return jsonify({"success": True})
 
+# ----------------------------------------------------
+# YENİ EKLENEN ARKA PLAN İŞÇİSİ (WORKER)
+# ----------------------------------------------------
+async def broadcast_worker(tokens, message_data):
+    """
+    Tokenleri 500'erli parçalara böler ve arka planda gönderir.
+    Render timeout'unu (zaman aşımı) engeller.
+    """
+    try:
+        chunk_size = 500
+        chunks = [tokens[i:i + chunk_size] for i in range(0, len(tokens), chunk_size)]
+
+        total_success = 0
+        total_failure = 0
+
+        print(f"📢 Broadcast Başlatıldı: Toplam {len(tokens)} kullanıcı, {len(chunks)} paket.")
+
+        for chunk in chunks:
+            message = messaging.MulticastMessage(
+                notification=messaging.Notification(
+                    title="Nova 📢",
+                    body=message_data,
+                ),
+                webpush=messaging.WebpushConfig(
+                    notification=messaging.WebpushNotification(
+                        icon="https://metogram7.github.io/novaweb/icons/icon-192.png",
+                        badge="https://metogram7.github.io/novaweb/icons/icon-72.png"
+                    ),
+                    fcm_options=messaging.WebpushFCMOptions(
+                        link="https://metogram7.github.io/novaweb/"
+                    )
+                ),
+                tokens=chunk,
+            )
+            
+            # Senkron fonksiyonu thread'de çalıştırarak main loop'u bloklamıyoruz
+            response = await asyncio.to_thread(messaging.send_multicast, message)
+            
+            total_success += response.success_count
+            total_failure += response.failure_count
+            
+            # Sunucuyu rahatlat
+            await asyncio.sleep(0.1)
+
+        print(f"✅ Broadcast Tamamlandı. Başarılı: {total_success}, Hatalı: {total_failure}")
+
+    except Exception as e:
+        print(f"❌ Broadcast Worker Hatası: {e}")
+        traceback.print_exc()
+
 @app.route("/api/admin/broadcast", methods=["POST"])
 async def send_broadcast_message():
-    """Yöneticinin gönderdiği mesajı herkese iletir."""
-    data = await request.get_json()
+    """Yöneticinin gönderdiği mesajı herkese iletir (Arka Plan Destekli)."""
+    try:
+        # force=True ile JSON parse etmeyi zorluyoruz
+        data = await request.get_json(force=True)
+    except Exception as e:
+        # Eğer veri çok büyükse veya JSON bozuksa buraya düşer
+        return jsonify({"success": False, "error": f"Veri hatası (Payload çok büyük olabilir): {e}"}), 400
+
     password = data.get("password")
     message_text = data.get("message")
     
-    # Şifre Kontrolü (Geliştirici Şifresi)
+    # Şifre Kontrolü
     if password != "sd157metehanak":
         return jsonify({"success": False, "error": "Hatalı Yönetici Şifresi!"}), 403
 
@@ -527,54 +584,15 @@ async def send_broadcast_message():
     if not tokens:
         return jsonify({"success": False, "error": "Hiç kayıtlı kullanıcı (token) yok."}), 404
 
-    # Mesajı Hazırla (İkon ve link, `firebase-messaging-sw.js` ve `manifest.json` ile uyumlu olmalıdır)
-    message = messaging.MulticastMessage(
-        notification=messaging.Notification(
-            title="Nova 📢",
-            body=message_text,
-        ),
-        webpush=messaging.WebpushConfig(
-            notification=messaging.WebpushNotification(
-                icon="https://metogram7.github.io/novaweb/icons/icon-192.png",
-                badge="https://metogram7.github.io/novaweb/icons/icon-72.png"
-            ),
-            fcm_options=messaging.WebpushFCMOptions(
-                link="https://metogram7.github.io/novaweb/" # Kendi ana sayfanız
-            )
-        ),
-        tokens=tokens,
-    )
+    # --- ARKA PLANDA ÇALIŞTIRMA ---
+    # İşlemi beklemiyoruz, arka plana atıp hemen "OK" dönüyoruz.
+    app.add_background_task(broadcast_worker, tokens, message_text)
 
-    try:
-        print("💡 Bildirim gönderme işlemi başlatılıyor...")
-        
-        # 1. Bildirim gönderme işlemini 20 saniye ile sınırla (KRİTİK DÜZELTME)
-        send_task = asyncio.to_thread(messaging.send_multicast, message)
-        
-        try:
-            # İşlemi beklerken 20 saniye zaman aşımı uygula
-            response = await asyncio.wait_for(send_task, timeout=20.0)
-            
-        except asyncio.TimeoutError:
-            # Render'ın takılıp kaldığı durumda bu hata tarayıcıya dönecektir.
-            print("❌ ZAMAN AŞIMI: Firebase Multicast işlemi 20 saniyede tamamlanamadı.")
-            return jsonify({"success": False, "error": "Firebase'e bağlanırken zaman aşımı (Timeout). Sunucunun ağ bağlantısını kontrol et."}), 500
-            
-        # Başarılı olduğunda logla
-        print(f"✅ Bildirim gönderildi. Başarılı: {response.success_count}, Başarısız: {response.failure_count}")
-
-
-        return jsonify({
-            "success": True, 
-            "sent_count": response.success_count, 
-            "fail_count": response.failure_count
-        })
-    except Exception as e:
-        # Hata olduğunda konsola detaylı log bas (Örn: Yetki veya JSON hatası)
-        print("❌ KRİTİK HATA: Bildirim gönderimi başarısız oldu!")
-        print(traceback.format_exc()) # Tüm hata izini (Traceback) bas
-        
-        return jsonify({"success": False, "error": f"Sunucu Hatası: {type(e).__name__} - {str(e)}"}), 500
+    return jsonify({
+        "success": True, 
+        "message": "Bildirim işlemi arka plana alındı, gönderiliyor...",
+        "target_count": len(tokens)
+    })
 
 # ------------------------------
 if __name__ == "__main__":
