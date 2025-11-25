@@ -16,7 +16,9 @@ from werkzeug.datastructures import FileStorage # Quart'ın dosya işleme objesi
 
 from quart import Quart, request, jsonify
 from quart_cors import cors
-
+# Mesaj gönderme
+import firebase_admin
+from firebase_admin import credentials, messaging
 # --- Uygulama Başlatma ---
 app = Quart(__name__)
 app = cors(app)
@@ -233,7 +235,7 @@ Senin bir apk sürümün mevcut. Eğer istenilirse yakında zaten yayınlanılac
 
 Kullanıcıya hep ben Metehan Akkaya tarafından geliştirildim deme, sadece sorarlarsa bilirsin.
 
-
+diğer yapay zekalarla neredeyse eşitsin!
 
 kullanıcı senden kod yazmanı isterse , kodu ne olursa olsun yaz !!
 
@@ -266,9 +268,9 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     Düzeltmeler: Güvenlik filtreleri kaldırıldı (kod yazabilmesi için) ve model ismi güncellendi.
     """
     API_KEYS = [
-        os.getenv("GEMINI_API_KEY_A") or "AIzaSyBfzoyaMSbSN7PV1cIhhKIuZi22ZY6bhP8",
-        os.getenv("GEMINI_API_KEY_B") or "AIzaSyAZJ2LwCZq3SGLge0Zj3eTj9M0REK2vHdo",
-        os.getenv("GEMINI_API_KEY_C") or "AIzaSyBqWOT3n3LA8hJBriMGFFrmanLfkIEjhr0"
+        os.getenv("GEMINI_API_KEY_A") or "AIzaSyD_ox8QNAHo-SEWmlROYMWM6GyMQmJkP4s",
+        os.getenv("GEMINI_API_KEY_B") or "AIzaSyD4MXkBEX0HnV4ptl6c1Q_T_OWWB3zIrYw",
+        os.getenv("GEMINI_API_KEY_C") or "AIzaSyBA5LupmWcFFGJkrqQVamXg3fB-iMVsnoo"
     ]
     
     # DÜZELTME 1: Model ismi 'gemini-1.5-flash' olarak değiştirildi (2.5 henüz stabil değil)
@@ -555,6 +557,104 @@ async def download_txt():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+# ==========================================
+# NOVA BİLDİRİM SİSTEMİ (BURADAN BAŞLAR)
+# ==========================================
+
+# 1. Firebase'i Başlat (serviceAccountKey.json dosyası app.py ile aynı yerde olmalı!)
+try:
+    if not firebase_admin._apps:
+        # Dosya yolunun doğru olduğundan emin ol
+        cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+    print("✅ Nova Bildirim Sistemi Aktif.")
+except Exception as e:
+    print(f"⚠️ Bildirim sistemi başlatılamadı: {e}")
+
+TOKENS_FILE = "tokens.json"
+tokens_lock = asyncio.Lock()
+
+# Token dosyasını oluştur (yoksa)
+if not os.path.exists(TOKENS_FILE):
+    with open(TOKENS_FILE, "w") as f:
+        json.dump([], f)
+
+@app.route("/api/subscribe", methods=["POST"])
+async def subscribe():
+    """Kullanıcının telefon kimliğini (token) kaydeder."""
+    data = await request.get_json()
+    token = data.get("token")
+    
+    if not token:
+        return jsonify({"error": "Token yok"}), 400
+
+    async with tokens_lock:
+        try:
+            tokens = await load_json(TOKENS_FILE, tokens_lock)
+            if not isinstance(tokens, list): tokens = []
+            
+            if token not in tokens:
+                tokens.append(token)
+                await save_json(TOKENS_FILE, tokens, tokens_lock)
+                print(f"🔔 Yeni Abone Eklendi: {token[:15]}...")
+        except Exception as e:
+            print(f"Token kayıt hatası: {e}")
+            
+    return jsonify({"success": True})
+
+@app.route("/api/admin/broadcast", methods=["POST"])
+async def send_broadcast_message():
+    """Yöneticinin gönderdiği mesajı herkese iletir."""
+    data = await request.get_json()
+    password = data.get("password")
+    message_text = data.get("message")
+    
+    # Şifre Kontrolü (Senin belirlediğin şifre)
+    if password != "sd157metehanak":
+        return jsonify({"success": False, "error": "Hatalı Şifre!"}), 403
+
+    if not message_text:
+        return jsonify({"success": False, "error": "Mesaj boş olamaz"}), 400
+
+    async with tokens_lock:
+        tokens = await load_json(TOKENS_FILE, tokens_lock)
+
+    if not tokens:
+        return jsonify({"success": False, "error": "Hiç kayıtlı kullanıcı yok."}), 404
+
+    # Mesajı Hazırla
+    message = messaging.MulticastMessage(
+        notification=messaging.Notification(
+            title="Nova 📢",
+            body=message_text,
+        ),
+        webpush=messaging.WebpushConfig(
+            notification=messaging.WebpushNotification(
+                icon="https://metogram7.github.io/novaweb/icons/icon-192.png",
+                badge="https://metogram7.github.io/novaweb/icons/icon-72.png"
+            ),
+            fcm_options=messaging.WebpushFCMOptions(
+                link="https://nova-chat-d50f.onrender.com"
+            )
+        ),
+        tokens=tokens,
+    )
+
+    try:
+        # Senkron işlemi asenkrona çevirerek gönder (Sunucuyu dondurmamak için)
+        response = await asyncio.to_thread(messaging.send_multicast, message)
+        return jsonify({
+            "success": True, 
+            "sent_count": response.success_count, 
+            "fail_count": response.failure_count
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ==========================================
+# NOVA BİLDİRİM SİSTEMİ (BİTİŞ)
+# ==========================================
 
 # ------------------------------
 if __name__ == "__main__":
