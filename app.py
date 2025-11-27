@@ -185,72 +185,67 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 # ------------------------------
 # Gemini API yanıt fonksiyonu
 # ------------------------------
+import aiohttp
+import asyncio
+
+# --- Google CSE ayarları ---
+GOOGLE_CSE_API_KEY = "AIzaSyBhARNUY0O6_CRWx9n9Ajbw4W4cyydYgVg"
+GOOGLE_CSE_ID = "e1d96bb25ff874031"
+
+# --- Gemini API ayarları ---
+GEMINI_API_KEYS = [
+    "YOUR_GEMINI_API_KEY_1",
+    "YOUR_GEMINI_API_KEY_2",
+    "YOUR_GEMINI_API_KEY_3"
+]
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
-    """
-    Nova'nın mesajına cevap üretir.
-    Eğer soru güncel bilgi gerektiriyorsa Google Custom Search API'si kullanır.
-    """
-    import re
+    """Mesajı işleyip Gemini API'den yanıt alır, güncel bilgi gerekiyorsa Google CSE ile destekler."""
 
-    # --- Google CSE API Key & CSE ID ---
-    GOOGLE_API_KEY = "AIzaSyBhARNUY0O6_CRWx9n9Ajbw4W4cyydYgVg"
-    CSE_ID = "e1d96bb25ff874031"
-
-    # --- Güncel bilgi gerektiren anahtar kelimeler ---
-    keywords = ['hava durumu', 'döviz', 'haber', 'skor', 'puan', 'fiyat', 'canlı', 'son dakika']
-
-    needs_search = any(k.lower() in message.lower() for k in keywords)
+    # --- Google araması gereksinimi ---
+    keywords = ["bugün", "güncel", "döviz", "euro", "dolar", "hava durumu", "skor", "haber", "son dakika"]
+    use_google = any(kw in message.lower() for kw in keywords)
 
     google_result_text = ""
-
-    if needs_search:
-        # Google Custom Search API çağrısı
+    if use_google:
         try:
-            url = "https://www.googleapis.com/customsearch/v1"
-            params = {"key": GOOGLE_API_KEY, "cx": CSE_ID, "q": message, "num": 3}
-            async with session.get(url, params=params, timeout=10) as resp:
-                data = await resp.json()
-                items = data.get("items", [])
-                if items:
+            params = {
+                "key": GOOGLE_CSE_API_KEY,
+                "cx": GOOGLE_CSE_ID,
+                "q": message,
+                "num": 3
+            }
+            async with session.get("https://www.googleapis.com/customsearch/v1", params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("items", [])
                     results = []
-                    for item in items:
-                        title = item.get("title", "")
-                        snippet = item.get("snippet", "")
-                        link = item.get("link", "")
+                    for it in items:
+                        title = it.get("title")
+                        snippet = it.get("snippet")
+                        link = it.get("link")
                         results.append(f"{title}\n{snippet}\n{link}")
-                    google_result_text = "\n\n".join(results)
-                else:
-                    google_result_text = "Google’dan bir sonuç bulunamadı."
+                    if results:
+                        google_result_text = "Güncel bilgiler:\n" + "\n\n".join(results)
         except Exception as e:
-            google_result_text = f"Google araması başarısız oldu: {e}"
+            google_result_text = f"❌ Google arama hatası: {e}"
 
-    # --- Gemini API çağrısı ---
-    API_KEYS = [
-        os.getenv("GEMINI_API_KEY_A"),
-        os.getenv("GEMINI_API_KEY_B"),
-        os.getenv("GEMINI_API_KEY_C")
-    ]
-
-    API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-
-    # Sohbet geçmişi
+    # --- Gemini payload hazırlama ---
     contents = []
     for msg in conversation[-15:]:
         role = "user" if msg["sender"] == "user" else "model"
-        if msg.get('content') and str(msg['content']).strip():
+        if msg.get("content") and str(msg["content"]).strip():
             contents.append({"role": role, "parts": [{"text": str(msg['content'])}]})
 
-    # Kullanıcı mesajı
-    current_message_text = f"{user_name + ': ' if user_name else ''}{message}"
+    current_message_text = f"{user_name}: {message}" if user_name else f"Kullanıcı: {message}"
     if google_result_text:
-        # Google sonuçlarını prompt’a ekle
-        current_message_text += f"\n\n[Google Arama Sonuçları]:\n{google_result_text}"
-
+        current_message_text += f"\n\n{google_result_text}"  # Gemini modeline Google sonuçlarını ilet
     contents.append({"role": "user", "parts": [{"text": current_message_text}]})
 
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
+        "system_instruction": {"parts": [{"text": "Sen Nova'sın, kullanıcıya doğru ve güncel bilgi ver. Kod yazmasını isterse yaz."}]},
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192},
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -260,37 +255,31 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         ]
     }
 
-    # API anahtarları ile deneme döngüsü
-    for key_index, key in enumerate(API_KEYS):
-        if not key:
-            continue
+    # --- Gemini API çağrısı ---
+    for key_index, key in enumerate(GEMINI_API_KEYS):
+        if not key: continue
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-
         for attempt in range(1, 4):
             try:
-                async with session.post(API_URL, headers=headers, json=payload, timeout=30) as resp:
+                async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=30) as resp:
                     if resp.status != 200:
-                        await asyncio.sleep(1.5 * attempt)
                         continue
-
                     data = await resp.json()
-                    candidates = data.get("candidates")
-                    if not candidates:
-                        return "Nova cevap üretemedi."
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
+                        if text:
+                            return text
+            except Exception:
+                await asyncio.sleep(1)
+                continue
 
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
+    # Eğer Gemini başarısız olursa, Google sonucu dön
+    if google_result_text:
+        return google_result_text
 
-                    if not text:
-                        text = "Kod yazmaya çalıştım ama boş döndü 😅"
-
-                    advance_nova_time()
-                    return text
-
-            except Exception as e:
-                await asyncio.sleep(1.5 * attempt)
-
-    return "Sunucuya bağlanılamadı veya tüm API anahtarları başarısız oldu. Lütfen tekrar dene."
+    return "❌ Yanıt alınamadı."
 
 
 # ------------------------------
