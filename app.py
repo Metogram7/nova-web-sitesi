@@ -188,19 +188,17 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     """
     Gemini API'ye istek gönderir ve yanıtı döndürür.
+    Google Search aracı (Grounding) eklenmiştir.
     """
     # Kendi API anahtarlarınızla güncelleyin
-
-
     API_KEYS = [
         os.getenv("GEMINI_API_KEY_A"),
         os.getenv("GEMINI_API_KEY_B"),
         os.getenv("GEMINI_API_KEY_C")
     ]
 
-    
-    # --- KRİTİK DÜZELTME: Model İsmi ---
-    # gemini-2.5-flash şu an yok, gemini-1.5-flash en kararlı ve hızlı olanıdır.
+    # --- API URL ve Model İsmi ---
+    # gemini-2.5-flash şu an en kararlı ve hızlı olanıdır.
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
     contents = []
@@ -217,7 +215,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         current_message_text = f"{user_name}: {message}"
     contents.append({"role": "user", "parts": [{"text": current_message_text}]})
 
-    # --- SİSTEM TALİMATI PAYLOAD İÇİNE ALINDI ---
+    # --- PAYLOAD: İstek Gövdesi ---
     payload = {
         "contents": contents,
         "system_instruction": {
@@ -229,7 +227,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                 "googleSearch": {}
             }
         ],
-        # -----------------------------------------------------------------
+        # ---------------------------------------------------------
         "generationConfig": {
             "temperature": 0.7,
             "maxOutputTokens": 8192,
@@ -242,6 +240,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         ]
     }
 
+    # --- API İstek Döngüsü ---
     for key_index, key in enumerate(API_KEYS):
         if not key: continue
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
@@ -252,8 +251,9 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                     if resp.status != 200:
                         error_text = await resp.text()
                         print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}. Detay: {error_text}")
-                        # 404 Hatası model bulunamadı demektir, beklemeden çık
-                        if resp.status == 404:
+                        
+                        # 404 Hatası (Model bulunamadı vb.) durumunda diğer anahtara geç
+                        if resp.status == 404 or resp.status == 400:
                             break
                         await asyncio.sleep(1.5 * attempt)
                         continue
@@ -264,13 +264,16 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                     if not candidates:
                         error_msg = data.get("error", {}).get("message", "")
                         prompt_feedback = data.get("promptFeedback", {})
+                        
+                        # Güvenlik filtresi tarafından bloklandıysa
                         if "blockReason" in prompt_feedback:
                             print(f"🚫 Bloklandı! Sebep: {prompt_feedback['blockReason']}")
-                            return "Güvenlik filtresine takıldım, ancak ayarlarım düzeltildi. Lütfen tekrar dene."
+                            return "Güvenlik filtresine takıldım. Lütfen farklı bir ifadeyle tekrar dene."
                         
                         text = error_msg or "Nova cevap üretemedi."
                         return text
 
+                    # Başarılı Yanıtı Çözümleme
                     parts = candidates[0].get("content", {}).get("parts", [])
                     text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
 
@@ -287,7 +290,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                 print(f"⚠️ API {chr(65+key_index)} genel hatası: {e}")
                 await asyncio.sleep(1.5 * attempt)
 
-    return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
+    return "Sunucuya bağlanılamadı veya tüm API anahtarları başarısız oldu. Lütfen tekrar dene."
 
 # ------------------------------
 # Inaktif Kullanıcı Kontrolü
