@@ -187,38 +187,58 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 # ------------------------------
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     """
-    Gemini API'ye istek gönderir ve yanıtı döndürür.
-    Google Search aracı zorlanarak devreye alınır.
+    Gemini API + Google Search entegrasyonu.
+    - Eğer soru güncel bilgi gerektiriyorsa Google'dan çek.
+    - Sonra Gemini API'ye ek context olarak ver.
     """
     API_KEYS = [
         os.getenv("GEMINI_API_KEY_A"),
         os.getenv("GEMINI_API_KEY_B"),
         os.getenv("GEMINI_API_KEY_C")
     ]
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    GOOGLE_CX = os.getenv("GOOGLE_CX")  # Custom Search Engine ID
 
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-    # Sohbet geçmişini temizle (son 15 mesaj)
+    # 1️⃣ Mesajı internet gerektiriyor mu kontrolü (basit heuristic)
+    needs_web = any(word in message.lower() for word in ["güncel", "hava", "döviz", "puan", "haber", "score", "son durum"])
+
+    web_result_text = ""
+    if needs_web and GOOGLE_API_KEY and GOOGLE_CX:
+        try:
+            # Google Custom Search API çağrısı
+            search_url = f"https://www.googleapis.com/customsearch/v1?q={message}&key={GOOGLE_API_KEY}&cx={GOOGLE_CX}"
+            async with session.get(search_url, timeout=15) as resp:
+                data = await resp.json()
+                items = data.get("items", [])
+                if items:
+                    top_result = items[0]
+                    title = top_result.get("title", "")
+                    snippet = top_result.get("snippet", "")
+                    link = top_result.get("link", "")
+                    web_result_text = f"Güncel Bilgi (Google): {title}\n{snippet}\nLink: {link}"
+        except Exception as e:
+            web_result_text = f"Güncel bilgi alınamadı: {e}"
+
+    # 2️⃣ Sohbet geçmişi (son 15 mesaj)
     contents = []
     for msg in conversation[-15:]:
         role = "user" if msg["sender"] == "user" else "model"
         if msg.get("content") and str(msg["content"]).strip():
             contents.append({"role": role, "parts": [{"text": str(msg["content"])}]})
 
-    # Güncel kullanıcı mesajı
     current_message_text = f"{user_name}: {message}" if user_name else f"Kullanıcı: {message}"
+    if web_result_text:
+        # Eğer web sonucu varsa, kullanıcı mesajına ekle
+        current_message_text += f"\n\n{web_result_text}"
+
     contents.append({"role": "user", "parts": [{"text": current_message_text}]})
 
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "tools": [
-            {"googleSearch": {"force": True}}  # 🔥 İnternete bakmayı zorla
-        ],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 8192,
-        },
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192},
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -227,6 +247,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         ]
     }
 
+    # 3️⃣ Gemini API çağrısı
     for key_index, key in enumerate(API_KEYS):
         if not key:
             continue
@@ -236,39 +257,23 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
             try:
                 async with session.post(API_URL, headers=headers, json=payload, timeout=30) as resp:
                     if resp.status != 200:
-                        error_text = await resp.text()
-                        print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}. Detay: {error_text}")
-                        if resp.status in [400, 404]:
-                            break
                         await asyncio.sleep(1.5 * attempt)
                         continue
-
                     data = await resp.json()
                     candidates = data.get("candidates", [])
                     if not candidates:
-                        error_msg = data.get("error", {}).get("message", "")
-                        prompt_feedback = data.get("promptFeedback", {})
-                        if "blockReason" in prompt_feedback:
-                            return f"Güvenlik filtresine takıldım. Sebep: {prompt_feedback['blockReason']}"
-                        return error_msg or "Nova cevap üretemedi."
-
-                    # Yanıtı birleştir
+                        continue
                     parts = candidates[0].get("content", {}).get("parts", [])
                     text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
                     if not text:
-                        text = "Kod yazmaya çalıştım ama boş döndü 😅"
-
+                        text = "Cevap üretilemedi 😅"
                     advance_nova_time()
                     return text
-
-            except asyncio.TimeoutError:
-                print(f"⚠️ API {chr(65+key_index)} zaman aşımı, deneme {attempt}")
-                await asyncio.sleep(1.5 * attempt)
-            except Exception as e:
-                print(f"⚠️ API {chr(65+key_index)} genel hatası: {e}")
+            except Exception:
                 await asyncio.sleep(1.5 * attempt)
 
-    return "Sunucuya bağlanılamadı veya tüm API anahtarları başarısız oldu. Lütfen tekrar dene."
+    return "Sunucuya bağlanılamadı veya tüm API anahtarları başarısız oldu."
+
 
 # ------------------------------
 # Inaktif Kullanıcı Kontrolü
