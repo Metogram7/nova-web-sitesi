@@ -188,46 +188,33 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     """
     Gemini API'ye istek gönderir ve yanıtı döndürür.
-    Google Search aracı (Grounding) eklenmiştir.
+    Google Search aracı zorlanarak devreye alınır.
     """
-    # Kendi API anahtarlarınızla güncelleyin
     API_KEYS = [
         os.getenv("GEMINI_API_KEY_A"),
         os.getenv("GEMINI_API_KEY_B"),
         os.getenv("GEMINI_API_KEY_C")
     ]
 
-    # --- API URL ve Model İsmi ---
-    # gemini-2.5-flash şu an en kararlı ve hızlı olanıdır.
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
+    # Sohbet geçmişini temizle (son 15 mesaj)
     contents = []
-
-    # Sohbet geçmişi (Boş mesajları temizle)
-    for msg in conversation[-15:]: # Son 15 mesaj yeterli context sağlar
+    for msg in conversation[-15:]:
         role = "user" if msg["sender"] == "user" else "model"
-        if msg.get('content') and str(msg['content']).strip():
-            contents.append({"role": role, "parts": [{"text": str(msg['content'])}]})
+        if msg.get("content") and str(msg["content"]).strip():
+            contents.append({"role": role, "parts": [{"text": str(msg["content"])}]})
 
     # Güncel kullanıcı mesajı
-    current_message_text = f"Kullanıcı: {message}"
-    if user_name:
-        current_message_text = f"{user_name}: {message}"
+    current_message_text = f"{user_name}: {message}" if user_name else f"Kullanıcı: {message}"
     contents.append({"role": "user", "parts": [{"text": current_message_text}]})
 
-    # --- PAYLOAD: İstek Gövdesi ---
     payload = {
         "contents": contents,
-        "system_instruction": {
-            "parts": [{"text": get_system_prompt()}]
-        },
-        # 🟢 GOOGLE ARAMA ARACI (İNTERNET ERİŞİMİ) BURADA TANIMLANIR
+        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
         "tools": [
-            {
-                "googleSearch": {}
-            }
+            {"googleSearch": {"force": True}}  # 🔥 İnternete bakmayı zorla
         ],
-        # ---------------------------------------------------------
         "generationConfig": {
             "temperature": 0.7,
             "maxOutputTokens": 8192,
@@ -240,9 +227,9 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         ]
     }
 
-    # --- API İstek Döngüsü ---
     for key_index, key in enumerate(API_KEYS):
-        if not key: continue
+        if not key:
+            continue
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
 
         for attempt in range(1, 4):
@@ -251,32 +238,23 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                     if resp.status != 200:
                         error_text = await resp.text()
                         print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}. Detay: {error_text}")
-                        
-                        # 404 Hatası (Model bulunamadı vb.) durumunda diğer anahtara geç
-                        if resp.status == 404 or resp.status == 400:
+                        if resp.status in [400, 404]:
                             break
                         await asyncio.sleep(1.5 * attempt)
                         continue
 
                     data = await resp.json()
-                    candidates = data.get("candidates")
-                    
+                    candidates = data.get("candidates", [])
                     if not candidates:
                         error_msg = data.get("error", {}).get("message", "")
                         prompt_feedback = data.get("promptFeedback", {})
-                        
-                        # Güvenlik filtresi tarafından bloklandıysa
                         if "blockReason" in prompt_feedback:
-                            print(f"🚫 Bloklandı! Sebep: {prompt_feedback['blockReason']}")
-                            return "Güvenlik filtresine takıldım. Lütfen farklı bir ifadeyle tekrar dene."
-                        
-                        text = error_msg or "Nova cevap üretemedi."
-                        return text
+                            return f"Güvenlik filtresine takıldım. Sebep: {prompt_feedback['blockReason']}"
+                        return error_msg or "Nova cevap üretemedi."
 
-                    # Başarılı Yanıtı Çözümleme
+                    # Yanıtı birleştir
                     parts = candidates[0].get("content", {}).get("parts", [])
                     text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
-
                     if not text:
                         text = "Kod yazmaya çalıştım ama boş döndü 😅"
 
