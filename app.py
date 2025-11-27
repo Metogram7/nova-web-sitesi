@@ -190,11 +190,14 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     Gemini API'ye istek gönderir ve yanıtı döndürür.
     """
     # Kendi API anahtarlarınızla güncelleyin
+
+
     API_KEYS = [
-        os.getenv("GEMINI_API_KEY_A") or "AIzaSyCPAc1YE3w97_Sg3PljwDuQisWP30AuaA0", 
-        os.getenv("GEMINI_API_KEY_B") or "AIzaSyBfokuWOHaV2R0Mx788x-GAstC75WCjzC8",
-        os.getenv("GEMINI_API_KEY_C") or "AIzaSyDxbuVOedGScltp9uYqhyPREaJV3mzpg2Y"
+        os.getenv("GEMINI_API_KEY_A"),
+        os.getenv("GEMINI_API_KEY_B"),
+        os.getenv("GEMINI_API_KEY_C")
     ]
+
     
     # --- KRİTİK DÜZELTME: Model İsmi ---
     # gemini-2.5-flash şu an yok, gemini-1.5-flash en kararlı ve hızlı olanıdır.
