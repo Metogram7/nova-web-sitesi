@@ -25,8 +25,7 @@ from firebase_admin import credentials, messaging
 
 # --- Uygulama Başlatma ---
 app = Quart(__name__)
-# Tüm originlere (*), Content-Type başlığına ve POST/OPTIONS metodlarına izin ver
-app = cors(app, allow_origin="*", allow_headers=["Content-Type", "Authorization"], allow_methods=["GET", "POST", "OPTIONS"])
+app = cors(app)
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
