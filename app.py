@@ -187,62 +187,53 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 # ------------------------------
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     """
-    Gemini API'ye istek gönderir ve net bilgi gereken sorularda web araması yapar.
+    Gemini API'ye istek gönderir ve yanıtı döndürür.
     """
-    import aiohttp
+    # Kendi API anahtarlarınızla güncelleyin
 
-    # --- Sabitler ---
+
     API_KEYS = [
         os.getenv("GEMINI_API_KEY_A"),
         os.getenv("GEMINI_API_KEY_B"),
         os.getenv("GEMINI_API_KEY_C")
     ]
+
+    
+    # --- KRİTİK DÜZELTME: Model İsmi ---
+    # gemini-2.5-flash şu an yok, gemini-1.5-flash en kararlı ve hızlı olanıdır.
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-    GOOGLE_API_KEY = "AIzaSyCICg4CFRUwTGP2laApyhiIOPgAdKvEi-8"
-    GOOGLE_CSE_ID = os.getenv("e1d96bb25ff874031")  # Environment variable olarak ayarla
-
-    # --- Web Arama Fonksiyonu ---
-    async def search_web(query: str):
-        if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
-            return "Web arama yapılamıyor (API key veya CSE ID eksik)."
-
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {"key": GOOGLE_API_KEY, "cx": GOOGLE_CSE_ID, "q": query, "num": 3}
-
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, params=params) as resp:
-                if resp.status != 200:
-                    return f"Web arama başarısız: {resp.status}"
-                data = await resp.json()
-                items = data.get("items", [])
-                if not items:
-                    return "Webde sonuç bulunamadı."
-                result_texts = [f"- {item['title']}: {item['link']}" for item in items]
-                return "\n".join(result_texts)
-
-    # --- NET BİLGİ SORUSU MU? ---
-    if "?" in message and any(keyword in message.lower() for keyword in ["kaç", "kim", "ne zaman", "nerede", "hangi", "ne oldu"]):
-        web_result = await search_web(message)
-        if web_result:
-            return f"Web'den buldum:\n{web_result}"
-
-    # --- Sohbet geçmişini hazırla ---
     contents = []
-    for msg in conversation[-15:]:
+
+    # Sohbet geçmişi (Boş mesajları temizle)
+    for msg in conversation[-15:]: # Son 15 mesaj yeterli context sağlar
         role = "user" if msg["sender"] == "user" else "model"
         if msg.get('content') and str(msg['content']).strip():
             contents.append({"role": role, "parts": [{"text": str(msg['content'])}]})
 
+    # Güncel kullanıcı mesajı
     current_message_text = f"Kullanıcı: {message}"
     if user_name:
         current_message_text = f"{user_name}: {message}"
     contents.append({"role": "user", "parts": [{"text": current_message_text}]})
 
+    # --- SİSTEM TALİMATI PAYLOAD İÇİNE ALINDI ---
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192},
+        "system_instruction": {
+            "parts": [{"text": get_system_prompt()}]
+        },
+        # 🟢 GOOGLE ARAMA ARACI (İNTERNET ERİŞİMİ) BURADA TANIMLANIR
+        "tools": [
+            {
+                "googleSearch": {}
+            }
+        ],
+        # -----------------------------------------------------------------
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 8192,
+        },
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -251,7 +242,6 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         ]
     }
 
-    # --- Gemini API çağrısı ---
     for key_index, key in enumerate(API_KEYS):
         if not key: continue
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
@@ -262,23 +252,28 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                     if resp.status != 200:
                         error_text = await resp.text()
                         print(f"⚠️ API {chr(65+key_index)} hata {resp.status}, deneme {attempt}. Detay: {error_text}")
-                        if resp.status == 404: break
+                        # 404 Hatası model bulunamadı demektir, beklemeden çık
+                        if resp.status == 404:
+                            break
                         await asyncio.sleep(1.5 * attempt)
                         continue
 
                     data = await resp.json()
                     candidates = data.get("candidates")
+                    
                     if not candidates:
                         error_msg = data.get("error", {}).get("message", "")
                         prompt_feedback = data.get("promptFeedback", {})
                         if "blockReason" in prompt_feedback:
                             print(f"🚫 Bloklandı! Sebep: {prompt_feedback['blockReason']}")
                             return "Güvenlik filtresine takıldım, ancak ayarlarım düzeltildi. Lütfen tekrar dene."
+                        
                         text = error_msg or "Nova cevap üretemedi."
                         return text
 
                     parts = candidates[0].get("content", {}).get("parts", [])
                     text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
+
                     if not text:
                         text = "Kod yazmaya çalıştım ama boş döndü 😅"
 
@@ -293,7 +288,6 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                 await asyncio.sleep(1.5 * attempt)
 
     return "Sunucuya bağlanılamadı 😕 Lütfen tekrar dene."
-
 
 # ------------------------------
 # Inaktif Kullanıcı Kontrolü
