@@ -207,7 +207,7 @@ GEMINI_API_KEYS = [
     "YOUR_GEMINI_API_KEY_2",
     "YOUR_GEMINI_API_KEY_3"
 ]
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     """Mesajı işleyip Gemini API'den yanıt alır, güncel bilgi gerekiyorsa Google CSE ile destekler."""
