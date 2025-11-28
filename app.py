@@ -193,7 +193,7 @@ import aiohttp
 import asyncio
 
 # --- Google CSE ayarları ---
-# Güvenlik için buradaki keyleri kendi panelinizden alıp string içine yazın.
+# Lütfen buraya kendi güncel ve çalışan anahtarlarınızı girin.
 GOOGLE_CSE_API_KEY = "AIzaSyBhARNUY0O6_CRWx9n9Ajbw4W4cyydYgVg"
 GOOGLE_CSE_ID = "e1d96bb25ff874031"
 
@@ -206,11 +206,19 @@ GEMINI_API_KEYS = [
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
-    """Mesajı işleyip Gemini API'den yanıt alır, HER SEFERİNDE Google CSE ile destekler."""
+    """
+    Mesajı işleyip Gemini API'den yanıt alır.
+    Güncel bilgi gerekiyorsa Google CSE ile bakar ve cevabı derleyerek sunar.
+    """
 
-    # --- 1. DEĞİŞİKLİK: Zorla Arama Modu ---
-    # Eski keywords kontrolünü kaldırdık. Artık her mesajda arama yapacak.
-    use_google = True 
+    # --- 1. DEĞİŞİKLİK: Akıllı Arama Gereksinimi ---
+    # Net ve güncel bilgi gerektiren sorgular için keyword listesi genişletildi.
+    keywords = [
+        "bugün", "güncel", "döviz", "euro", "dolar", "hava durumu", "skor", 
+        "haber", "son dakika", "kimdir", "nedir", "kaç", "ne zaman", "sonuç", 
+        "fiyatı", "tanımı", "nerede", "biyografi", "ne demek", "puan durumu"
+    ]
+    use_google = any(kw in message.lower() for kw in keywords)
 
     google_result_text = ""
     if use_google:
@@ -220,7 +228,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                 "cx": GOOGLE_CSE_ID,
                 "q": message,
                 "num": 3,
-                "safe": "off" # Daha geniş sonuçlar için
+                "safe": "off" 
             }
             async with session.get("https://www.googleapis.com/customsearch/v1", params=params) as resp:
                 if resp.status == 200:
@@ -231,43 +239,44 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                         title = it.get("title")
                         snippet = it.get("snippet")
                         link = it.get("link")
+                        # Modeli beslemek için sade format
                         results.append(f"Başlık: {title}\nÖzet: {snippet}\nLink: {link}")
                     
                     if results:
-                        # Gemini'ye bunun internet sonucu olduğunu belirten başlık
-                        google_result_text = "--- İNTERNET ARAMA SONUÇLARI ---\n" + "\n\n".join(results) + "\n--------------------------------\n"
+                        # Bu metin sadece modele gidecek, kullanıcıya değil
+                        google_result_text = "--- İNTERNET ARAMA KAYNAKLARI ---\n" + "\n\n".join(results) + "\n--------------------------------\n"
         except Exception as e:
-            # Hata olsa bile kod akışı bozulmaz, sadece loglar
+            # Hata olsa bile modelin çalışmasını engelleme
             print(f"Google arama hatası (log): {e}")
-            google_result_text = ""
 
     # --- Gemini payload hazırlama ---
     contents = []
-    # Son 15 mesajı geçmişe ekle
     for msg in conversation[-15:]:
         role = "user" if msg["sender"] == "user" else "model"
         if msg.get("content") and str(msg["content"]).strip():
             contents.append({"role": role, "parts": [{"text": str(msg['content'])}]})
 
-    # Kullanıcı mesajını ve varsa Google sonuçlarını birleştir
+    # --- 2. DEĞİŞİKLİK: Derlenmiş Prompt Oluşturma ---
     if google_result_text:
-        # Prompt mühendisliği: Modele sonuçları kullanmasını emrediyoruz
-        final_message = (
-            f"Kullanıcı sorusu: {message}\n\n"
-            f"Aşağıdaki güncel internet arama sonuçlarını kullanarak bu soruyu cevapla:\n"
+        # Modelden cevabı derlemesini isteyen güçlü bir prompt oluşturuyoruz
+        final_prompt = (
+            f"Kullanıcının sorusu: {message}\n"
+            f"Aşağıdaki kaynak verileri (internet arama sonuçlarını) kullanarak, kullanıcının sorusuna doğrudan, net ve tek bir cevap oluştur. Cevabı derle, özetle ve kesinlikle kaynakları olduğu gibi gösterme. Cevabın akıcı bir konuşma dilinde olmalıdır:\n"
             f"{google_result_text}"
         )
     else:
-        final_message = message
+        # Arama yapılmadıysa veya sonuç dönmediyse normal sor
+        final_prompt = message
 
-    prompt_text = f"{user_name}: {final_message}" if user_name else f"Kullanıcı: {final_message}"
+    prompt_text = f"{user_name}: {final_prompt}" if user_name else f"Kullanıcı: {final_prompt}"
     
     contents.append({"role": "user", "parts": [{"text": prompt_text}]})
 
+    # --- 3. DEĞİŞİKLİK: System Instruction Güçlendirme ---
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": [{"text": "Sen Nova'sın. Kullanıcıya her zaman doğru, güncel ve net bilgi ver. İnternet sonuçları sağlanmışsa onları kullanarak cevapla."}]},
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192},
+        "system_instruction": {"parts": [{"text": "Sen Nova'sın. Kullanıcıya sorulan sorunun internet sonuçlarını **derleyip**, tek ve net bir cevap olarak sun. Cevaplarını doğal ve akıcı bir dille oluştur. Kod yazmasını isterse yaz."}]},
+        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 8192}, # Daha net cevaplar için temperature düşürüldü
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -276,19 +285,15 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         ]
     }
 
-    # --- Gemini API çağrısı (Rotasyonlu) ---
+    # --- Gemini API çağrısı ---
     for key_index, key in enumerate(GEMINI_API_KEYS):
-        if not key or "YOUR_GEMINI" in key: continue # Boş veya varsayılan keyleri atla
+        if not key or "YOUR_GEMINI" in key: continue
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-        
-        # Retry mekanizması
         for attempt in range(1, 4):
             try:
                 async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=30) as resp:
                     if resp.status != 200:
-                        # Hata durumunda diğer denemeye veya key'e geç
                         continue
-                        
                     data = await resp.json()
                     candidates = data.get("candidates", [])
                     if candidates:
@@ -300,11 +305,9 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                 await asyncio.sleep(1)
                 continue
 
-    # Eğer Gemini tamamen başarısız olursa ve elimizde Google sonucu varsa onu ham olarak dön
-    if google_result_text:
-        return f"Yapay zeka yanıt veremedi, ancak şu bilgileri buldum:\n{google_result_text}"
-
-    return "❌ Yanıt alınamadı."
+    # --- 4. DEĞİŞİKLİK: Temiz Hata Mesajı ---
+    # Başarısızlık durumunda ham arama sonuçlarını göstermiyoruz.
+    return "❌ Yanıt alınamadı veya arama sonuçları kullanılamadı. Lütfen tekrar deneyin."
 
 # ------------------------------
 # Inaktif Kullanıcı Kontrolü
