@@ -196,23 +196,27 @@ Yeni nesile ayak uydur
 # ------------------------------
 import aiohttp
 import asyncio
+import os
 
 # --- Google CSE ayarları ---
-GOOGLE_CSE_API_KEY = "AIzaSyBhARNUY0O6_CRWx9n9Ajbw4W4cyydYgVg"
-GOOGLE_CSE_ID = "e1d96bb25ff874031"
+GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY")
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 # --- Gemini API ayarları ---
 GEMINI_API_KEYS = [
-    "YOUR_GEMINI_API_KEY_1",
-    "YOUR_GEMINI_API_KEY_2",
-    "YOUR_GEMINI_API_KEY_3"
+    os.getenv("GEMINI_API_KEY_A"),
+    os.getenv("GEMINI_API_KEY_B"),
+    os.getenv("GEMINI_API_KEY_C"),
 ]
+
+# Yeni doğru endpoint
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent"
 
-async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
-    """Mesajı işleyip Gemini API'den yanıt alır, güncel bilgi gerekiyorsa Google CSE ile destekler."""
 
-    # --- Google araması gereksinimi ---
+async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
+    """Mesajı işleyip Gemini API'den yanıt alır, gerekirse Google CSE ile destekler."""
+
+    # --- Güncel bilgi gereksinimi ---
     keywords = ["bugün", "güncel", "döviz", "euro", "dolar", "hava durumu", "skor", "haber", "son dakika"]
     use_google = any(kw in message.lower() for kw in keywords)
 
@@ -230,66 +234,96 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                     data = await resp.json()
                     items = data.get("items", [])
                     results = []
+
                     for it in items:
                         title = it.get("title")
                         snippet = it.get("snippet")
                         link = it.get("link")
                         results.append(f"{title}\n{snippet}\n{link}")
+
                     if results:
                         google_result_text = "Güncel bilgiler:\n" + "\n\n".join(results)
+
         except Exception as e:
             google_result_text = f"❌ Google arama hatası: {e}"
 
     # --- Gemini payload hazırlama ---
     contents = []
-    for msg in conversation[-15:]:
-        role = "user" if msg["sender"] == "user" else "model"
-        if msg.get("content") and str(msg["content"]).strip():
-            contents.append({"role": role, "parts": [{"text": str(msg['content'])}]})
 
-    current_message_text = f"{user_name}: {message}" if user_name else f"Kullanıcı: {message}"
+    # Son 15 mesajı modele gönderiyoruz
+    for msg in conversation[-15:]:
+        sender = msg.get("sender")
+        text = msg.get("text") or msg.get("content")
+        if not text:
+            continue
+
+        role = "user" if sender == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": str(text)}]})
+
+    # Kullanıcının güncel mesajı
+    current_message = f"{user_name}: {message}" if user_name else message
+
+    # Google bilgisi varsa ekliyoruz
     if google_result_text:
-        current_message_text += f"\n\n{google_result_text}"  # Gemini modeline Google sonuçlarını ilet
-    contents.append({"role": "user", "parts": [{"text": current_message_text}]})
+        current_message += f"\n\n{google_result_text}"
+
+    contents.append({"role": "user", "parts": [{"text": current_message}]})
 
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": [{"text": "Sen Nova'sın, kullanıcıya doğru ve güncel bilgi ver. Kod yazmasını isterse yaz."}]},
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192},
+        "system_instruction": {
+            "parts": [
+                {"text": "Sen Nova'sın. Kullanıcıya doğal, doğru ve güncel bilgi ver. Kod isterse kod üret."}
+            ]
+        },
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 8192
+        },
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
     }
 
     # --- Gemini API çağrısı ---
-    for key_index, key in enumerate(GEMINI_API_KEYS):
-        if not key: continue
-        headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-        for attempt in range(1, 4):
+    for key in GEMINI_API_KEYS:
+        if not key:
+            continue
+
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": key
+        }
+
+        for attempt in range(3):
             try:
-                async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=30) as resp:
+                async with session.post(GEMINI_API_URL, json=payload, headers=headers, timeout=30) as resp:
                     if resp.status != 200:
                         continue
+
                     data = await resp.json()
                     candidates = data.get("candidates", [])
+
                     if candidates:
                         parts = candidates[0].get("content", {}).get("parts", [])
-                        text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
+                        text = "".join(p.get("text", "") for p in parts)
+                        text = text.strip()
+
                         if text:
                             return text
+
             except Exception:
                 await asyncio.sleep(1)
                 continue
 
-    # Eğer Gemini başarısız olursa, Google sonucu dön
+    # Gemini çalışmazsa Google sonucu dön
     if google_result_text:
         return google_result_text
 
     return "❌ Yanıt alınamadı."
-
 
 # ------------------------------
 # Inaktif Kullanıcı Kontrolü
