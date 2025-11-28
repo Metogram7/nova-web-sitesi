@@ -408,8 +408,6 @@ async def chat():
 
     # 3. Sohbet geçmişi yükle ve kullanıcı mesajını ekle
     hist = await load_json(HISTORY_FILE, history_lock)
-    chat = hist.setdefault(userId, {}).setdefault(chatId, [])
-    chat.append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
 
     # 4. Nova cevabı üret (Gemini API çağrısı)
