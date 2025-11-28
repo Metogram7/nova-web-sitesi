@@ -199,9 +199,9 @@ GOOGLE_CSE_ID = "e1d96bb25ff874031"
 
 # --- Gemini API ayarları ---
 GEMINI_API_KEYS = [
-    "YOUR_GEMINI_API_KEY_1",
-    "YOUR_GEMINI_API_KEY_2",
-    "YOUR_GEMINI_API_KEY_3"
+    "GEMINI_API_KEY_A",
+    "GEMINI_API_KEY_B",
+    "GEMINI_API_KEY_C"
 ]
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
@@ -307,7 +307,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 
     # --- 4. DEĞİŞİKLİK: Temiz Hata Mesajı ---
     # Başarısızlık durumunda ham arama sonuçlarını göstermiyoruz.
-    return "❌ Yanıt alınamadı veya arama sonuçları kullanılamadı. Lütfen tekrar deneyin."
+    return "❌ Yanıt alınamadı veya arama sonuçları kullanılamadı. Lütfen tekrar deneyin.(Galiba bakım molasındayım.)"
 
 # ------------------------------
 # Inaktif Kullanıcı Kontrolü
