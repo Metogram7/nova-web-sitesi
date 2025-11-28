@@ -426,6 +426,7 @@ Mesaj:
 # Ana API route'ları
 # ------------------------------
 # --- /api/chat (Nova) TAM ÇALIŞAN API) ---
+# --- /api/chat (DÜZELTİLMİŞ HALİ) ---
 @app.post("/api/chat")
 async def chat():
     try:
@@ -436,33 +437,45 @@ async def chat():
         if not message:
             return jsonify({"error": "Mesaj boş olamaz."}), 400
 
+        # 1. ADIM: Geçmişi dosyadan YÜKLE (history fonksiyonu ile karışmaması için 'hist_data' dedik)
+        hist_data = await load_json(HISTORY_FILE, history_lock)
+
         # Kullanıcı geçmişini al (yoksa oluştur)
-        chat_history = history.setdefault(userId, [])
+        user_history = hist_data.setdefault(userId, []) # Artık sözlük üzerinde işlem yapıyoruz
 
         # Kullanıcı mesajını geçmişe ekle
-        chat_history.append({
+        user_history.append({
             "sender": "user",
             "text": message,
             "ts": datetime.now(datetime.UTC).isoformat()
         })
 
         # Gemini cevabını al
-        reply = await gemma_cevap_async(message)
+        reply = await gemma_cevap_async(message, user_history, session, user_name=userId) # conversation parametresini de ekledim
 
         # Nova cevabını geçmişe kaydet
-        chat_history.append({
+        user_history.append({
             "sender": "nova",
             "text": reply,
             "ts": datetime.now(datetime.UTC).isoformat()
         })
 
-        # Yanıtı JSON olarak döndür (EN ÖNEMLİ KISIM)
+        # 2. ADIM: Güncellenmiş veriyi dosyaya KAYDET (Bunu yapmazsanız mesajlar hatırlanmaz)
+        await save_json(HISTORY_FILE, hist_data, history_lock)
+
+        # Son görülme zamanını güncelle (Opsiyonel ama iyi olur)
+        last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
+        last_seen[userId] = datetime.utcnow().isoformat()
+        await save_json(LAST_SEEN_FILE, last_seen, last_seen_lock)
+
+        # Yanıtı JSON olarak döndür
         return jsonify({
             "reply": reply
         }), 200
 
     except Exception as e:
         print("HATA /api/chat:", e)
+        traceback.print_exc() # Hatanın tam yerini görmek için
         return jsonify({"error": "Sunucu hatası", "details": str(e)}), 500
 
 @app.route("/")
