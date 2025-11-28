@@ -427,6 +427,7 @@ Mesaj:
 # ------------------------------
 # --- /api/chat (Nova) TAM ÇALIŞAN API) ---
 # --- /api/chat (DÜZELTİLMİŞ HALİ) ---
+# --- /api/chat (TARİH HATASI DÜZELTİLMİŞ VERSİYON) ---
 @app.post("/api/chat")
 async def chat():
     try:
@@ -437,45 +438,42 @@ async def chat():
         if not message:
             return jsonify({"error": "Mesaj boş olamaz."}), 400
 
-        # 1. ADIM: Geçmişi dosyadan YÜKLE (history fonksiyonu ile karışmaması için 'hist_data' dedik)
+        # Geçmişi yükle
         hist_data = await load_json(HISTORY_FILE, history_lock)
+        user_history = hist_data.setdefault(userId, [])
 
-        # Kullanıcı geçmişini al (yoksa oluştur)
-        user_history = hist_data.setdefault(userId, []) # Artık sözlük üzerinde işlem yapıyoruz
-
-        # Kullanıcı mesajını geçmişe ekle
+        # Kullanıcı mesajını ekle (datetime.utcnow kullanıldı)
         user_history.append({
             "sender": "user",
             "text": message,
-            "ts": datetime.now(datetime.UTC).isoformat()
+            "ts": datetime.utcnow().isoformat()
         })
 
-        # Gemini cevabını al
-        reply = await gemma_cevap_async(message, user_history, session, user_name=userId) # conversation parametresini de ekledim
+        # Gemini cevabını al (conversation olarak user_history gönderiliyor)
+        reply = await gemma_cevap_async(message, user_history, session, user_name=userId)
 
-        # Nova cevabını geçmişe kaydet
+        # Nova cevabını ekle (datetime.utcnow kullanıldı)
         user_history.append({
             "sender": "nova",
             "text": reply,
-            "ts": datetime.now(datetime.UTC).isoformat()
+            "ts": datetime.utcnow().isoformat()
         })
 
-        # 2. ADIM: Güncellenmiş veriyi dosyaya KAYDET (Bunu yapmazsanız mesajlar hatırlanmaz)
+        # Kaydet
         await save_json(HISTORY_FILE, hist_data, history_lock)
 
-        # Son görülme zamanını güncelle (Opsiyonel ama iyi olur)
+        # Son görülme güncelle
         last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
         last_seen[userId] = datetime.utcnow().isoformat()
         await save_json(LAST_SEEN_FILE, last_seen, last_seen_lock)
 
-        # Yanıtı JSON olarak döndür
         return jsonify({
             "reply": reply
         }), 200
 
     except Exception as e:
         print("HATA /api/chat:", e)
-        traceback.print_exc() # Hatanın tam yerini görmek için
+        traceback.print_exc()
         return jsonify({"error": "Sunucu hatası", "details": str(e)}), 500
 
 @app.route("/")
