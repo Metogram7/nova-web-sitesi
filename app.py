@@ -425,50 +425,45 @@ Mesaj:
 # ------------------------------
 # Ana API route'ları
 # ------------------------------
-@app.route("/api/chat", methods=["POST"])
+# --- /api/chat (Nova) TAM ÇALIŞAN API) ---
+@app.post("/api/chat")
 async def chat():
-    """Sohbet mesajını işler, Gemini API'den yanıt alır ve kaydeder."""
-    data = await request.get_json(force=True)
-    userId = data.get("userId", "anon")
-    chatId = data.get("currentChat", "default")
-    message = (data.get("message") or "").strip()
-    userInfo = data.get("userInfo", {})
+    try:
+        data = await request.json
+        message = data.get("message", "")
+        userId = data.get("userId", "unknown")
 
-    if not message:
-        return jsonify({"response": "❌ Mesaj boş olamaz."}), 400
+        if not message:
+            return jsonify({"error": "Mesaj boş olamaz."}), 400
 
-    # 1. Cache kontrolü
-    cache = await load_json(CACHE_FILE, cache_lock)
-    cache_key = f"{userId}:{message.lower()}"
-    if cache_key in cache:
-        reply = cache[cache_key]["response"]
-        return jsonify({"response": reply, "cached": True})
+        # Kullanıcı geçmişini al (yoksa oluştur)
+        chat_history = history.setdefault(userId, [])
 
-    # 2. Kullanıcıyı aktif olarak işaretle
-    last_seen = await load_json(LAST_SEEN_FILE, last_seen_lock)
-    last_seen[userId] = datetime.utcnow().isoformat()
-    await save_json(LAST_SEEN_FILE, last_seen, last_seen_lock)
+        # Kullanıcı mesajını geçmişe ekle
+        chat_history.append({
+            "sender": "user",
+            "text": message,
+            "ts": datetime.now(datetime.UTC).isoformat()
+        })
 
-    # 3. Sohbet geçmişi yükle ve kullanıcı mesajını ekle
-    hist = await load_json(HISTORY_FILE, history_lock)
-    chat = hist.setdefault(userId, {}).setdefault(chatId, [])
-    chat.append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
-    await save_json(HISTORY_FILE, hist, history_lock)
+        # Gemini cevabını al
+        reply = await gemma_cevap_async(message)
 
-    # 4. Nova cevabı üret (Gemini API çağrısı)
-    conv_for_prompt = [{"sender": msg["sender"], "content": msg["text"]} for msg in chat]
-    global session
-    reply = await gemma_cevap_async(message, conv_for_prompt, session, userInfo.get("name"))
+        # Nova cevabını geçmişe kaydet
+        chat_history.append({
+            "sender": "nova",
+            "text": reply,
+            "ts": datetime.now(datetime.UTC).isoformat()
+        })
 
-    # 5. Nova mesajını kaydet
-    chat.append({"sender": "nova", "text": reply, "ts": datetime.utcnow().isoformat()})
-    await save_json(HISTORY_FILE, hist, history_lock)
+        # Yanıtı JSON olarak döndür (EN ÖNEMLİ KISIM)
+        return jsonify({
+            "reply": reply
+        }), 200
 
-    # 6. Cache kaydı
-    cache[cache_key] = {"response": reply}
-    await save_json(CACHE_FILE, cache, cache_lock)
-
-    return jsonify({"response": reply, "cached": False})
+    except Exception as e:
+        print("HATA /api/chat:", e)
+        return jsonify({"error": "Sunucu hatası", "details": str(e)}), 500
 
 @app.route("/")
 async def home():
