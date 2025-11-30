@@ -194,9 +194,9 @@ GOOGLE_CSE_ID = "e1d96bb25ff874031"
 
 # --- Gemini API ayarları ---
 GEMINI_API_KEYS = [
-    "YOUR_GEMINI_API_KEY_1",
-    "YOUR_GEMINI_API_KEY_2",
-    "YOUR_GEMINI_API_KEY_3"
+    "GEMINI_API_KEY_A",
+    "GEMINI_API_KEY_B",
+    "GEMINI_API_KEY_C"
 ]
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
@@ -408,6 +408,8 @@ async def chat():
 
     # 3. Sohbet geçmişi yükle ve kullanıcı mesajını ekle
     hist = await load_json(HISTORY_FILE, history_lock)
+    chat = hist.setdefault(userId, {}).setdefault(chatId, [])
+    chat.append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
     await save_json(HISTORY_FILE, hist, history_lock)
 
     # 4. Nova cevabı üret (Gemini API çağrısı)
