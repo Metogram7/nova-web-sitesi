@@ -4,10 +4,9 @@ import asyncio
 import aiohttp
 import random
 import traceback
+import ssl # SSL importunu ekledim (Render'da gerekebilir)
 from datetime import datetime, timedelta
 
-# Flask importlarını Quart ile çakışmaması için düzenledik
-# Quart, Flask ile uyumlu send_file fonksiyonuna sahiptir
 from quart import Quart, request, jsonify, send_file
 from quart_cors import cors
 from werkzeug.datastructures import FileStorage
@@ -32,7 +31,8 @@ session: aiohttp.ClientSession | None = None
 # E-POSTA AYARLARI (LÜTFEN GİZLEYİN!)
 # ------------------------------------
 MAIL_ADRES = "nova.ai.v4.2@gmail.com"
-MAIL_SIFRE = "gamtdoiralefaruk" # BU ŞİFRENİN GERÇEKTE APP ŞİFRESİ OLMADIĞINDAN EMİN OLUN
+# Düzeltme: Environment Variable'dan çek, yoksa varsayılanı kullan
+MAIL_SIFRE = os.getenv("MAIL_SIFRE", "gamtdoiralefaruk") 
 ALICI_ADRES = MAIL_ADRES
 # ------------------------------------
 
@@ -41,7 +41,14 @@ ALICI_ADRES = MAIL_ADRES
 async def startup():
     global session
     timeout = aiohttp.ClientTimeout(total=30, connect=10)
-    session = aiohttp.ClientSession(timeout=timeout)
+    
+    # SSL/Aiohttp Bağlantı Güçlendirmesi
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+    
+    session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     # Arka plan görevlerini başlat
     asyncio.create_task(keep_alive())
     asyncio.create_task(check_inactive_users())
@@ -55,19 +62,21 @@ async def cleanup():
 # --- Arka Plan Görevleri ---
 async def keep_alive():
     """Render gibi platformlarda uygulamanın uykuya dalmasını engeller."""
+    # Kendi URL'nizi Environment'dan alabilir veya hardcode edebilirsiniz
+    url = "https://nova-chat-d50f.onrender.com" 
+    
     while True:
         try:
-            # Buradaki URL'yi KENDİ Render/Deploy URL'niz ile değiştirin
-            # Kendi kendine istek atarak uyanık kalır
-            async with session.get("https://nova-chat-d50f.onrender.com", timeout=10) as r:
-                if r.status == 200:
-                    print("✅ Keep-alive başarılı.")
-                else:
-                    print(f"⚠️ Keep-alive status: {r.status}")
+            await asyncio.sleep(600) # 10 dakika bekle
+            if session and not session.closed:
+                async with session.get(url, timeout=10) as r:
+                    if r.status == 200:
+                        print("✅ Keep-alive başarılı.")
+                    else:
+                        print(f"⚠️ Keep-alive status: {r.status}")
         except Exception as e:
-            # Hata mesajını çok sık yazdırmamak için pass geçilebilir veya loglanabilir
-            pass
-        await asyncio.sleep(600)
+            # Hata olsa bile döngüyü kırma, sadece logla
+            print(f"⚠️ Keep-alive bağlantı uyarısı: {e}")
 
 # --- Dosya ve Kilit (Lock) Yönetimi ---
 HISTORY_FILE = "chat_history.json"
@@ -79,7 +88,6 @@ files_to_check = [HISTORY_FILE, LAST_SEEN_FILE, CACHE_FILE, TOKENS_FILE]
 for file in files_to_check:
     if not os.path.exists(file):
         with open(file, "w", encoding="utf-8") as f:
-            # Token dosyası liste, diğerleri obje (dict)
             if file == TOKENS_FILE:
                 json.dump([], f)
             else:
@@ -185,23 +193,28 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 # ------------------------------
 # Gemini API yanıt fonksiyonu
 # ------------------------------
-import aiohttp
-import asyncio
 
 # --- Google CSE ayarları ---
-GOOGLE_CSE_API_KEY = "AIzaSyBhARNUY0O6_CRWx9n9Ajbw4W4cyydYgVg"
+# Düzeltme: Google API anahtarını da Environment Variable'dan okumayı dene
+GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY", "AIzaSyBhARNUY0O6_CRWx9n9Ajbw4W4cyydYgVg") 
 GOOGLE_CSE_ID = "e1d96bb25ff874031"
 
-# --- Gemini API ayarları ---
+# --- Gemini API ayarları (DÜZELTİLMİŞ KISIM) ---
 GEMINI_API_KEYS = [
-    "YOUR_GEMINI_API_KEY_1",
-    "YOUR_GEMINI_API_KEY_2",
-    "YOUR_GEMINI_API_KEY_3"
+    os.getenv("GEMINI_API_KEY_A"),
+    os.getenv("GEMINI_API_KEY_B"),
+    os.getenv("GEMINI_API_KEY_C"),
+    os.getenv("GEMINI_API_KEY") 
 ]
+GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key is not None]
+
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     """Mesajı işleyip Gemini API'den yanıt alır, güncel bilgi gerekiyorsa Google CSE ile destekler."""
+
+    if not GEMINI_API_KEYS:
+        return "⚠️ Sistem Hatası: API Anahtarı bulunamadı (Render Environment Variables kontrol edin)."
 
     # --- Google araması gereksinimi ---
     keywords = ["bugün", "güncel", "döviz", "euro", "dolar", "hava durumu", "skor", "haber", "son dakika"]
@@ -240,12 +253,13 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 
     current_message_text = f"{user_name}: {message}" if user_name else f"Kullanıcı: {message}"
     if google_result_text:
-        current_message_text += f"\n\n{google_result_text}"  # Gemini modeline Google sonuçlarını ilet
+        current_message_text += f"\n\n{google_result_text}" 
     contents.append({"role": "user", "parts": [{"text": current_message_text}]})
 
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": [{"text": "Sen Nova'sın, kullanıcıya doğru ve güncel bilgi ver. Kod yazmasını isterse yaz."}]},
+        # Düzeltme: system_instruction alanında doğru fonksiyon çağrılıyor
+        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192},
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -256,7 +270,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     }
 
     # --- Gemini API çağrısı ---
-    for key_index, key in enumerate(GEMINI_API_KEYS):
+    for key in GEMINI_API_KEYS:
         if not key: continue
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
         for attempt in range(1, 4):
@@ -275,7 +289,6 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                 await asyncio.sleep(1)
                 continue
 
-    # Eğer Gemini başarısız olursa, Google sonucu dön
     if google_result_text:
         return google_result_text
 
@@ -341,7 +354,7 @@ Mesaj:
         try:
             file_name = uploaded_file.filename
             mime_type = uploaded_file.mimetype or 'application/octet-stream'
-            file_data = uploaded_file.read() # Quart FileStorage read senkrondur
+            file_data = uploaded_file.read() 
             maintype, subtype = mime_type.split('/', 1)
             part = MIMEBase(maintype, subtype)
             part.set_payload(file_data)
@@ -357,7 +370,6 @@ Mesaj:
 
     try:
         def send_sync_mail():
-            # Güvenlik ve hız için bu senkron işlem asyncio.to_thread ile çağrılır.
             server = smtplib.SMTP("smtp.gmail.com", 587)
             server.starttls()
             server.login(MAIL_ADRES, MAIL_SIFRE)
@@ -458,7 +470,6 @@ async def voice():
     file = files.get("file")
     if not file:
         return jsonify({"error": "Dosya bulunamadı"}), 400
-    # audio_bytes = file.read() # Asenkron okuma gerekebilir
     return jsonify({"reply": "Nova yanıtı (text olarak)"}), 200
 
 @app.route("/download_txt", methods=["POST"])
@@ -493,10 +504,12 @@ async def download_txt():
 # 1. Firebase'i Başlat
 try:
     if not firebase_admin._apps:
+        # serviceAccountKey.json'ı arar. (Önceki hatayı çözmek için dosyanın geçerli olması lazım)
         cred = credentials.Certificate("serviceAccountKey.json")
         firebase_admin.initialize_app(cred)
     print("✅ Nova Bildirim Sistemi Aktif.")
 except Exception as e:
+    # Bu hata, sunucunun çalışmasını engellemez, sadece Bildirim sistemini kapatır.
     print(f"⚠️ Bildirim sistemi başlatılamadı: {e}")
 
 @app.route("/api/subscribe", methods=["POST"])
@@ -576,10 +589,8 @@ async def broadcast_worker(tokens, message_data):
 async def send_broadcast_message():
     """Yöneticinin gönderdiği mesajı herkese iletir (Arka Plan Destekli)."""
     try:
-        # force=True ile JSON parse etmeyi zorluyoruz
         data = await request.get_json(force=True)
     except Exception as e:
-        # Eğer veri çok büyükse veya JSON bozuksa buraya düşer
         return jsonify({"success": False, "error": f"Veri hatası (Payload çok büyük olabilir): {e}"}), 400
 
     password = data.get("password")
@@ -599,7 +610,6 @@ async def send_broadcast_message():
         return jsonify({"success": False, "error": "Hiç kayıtlı kullanıcı (token) yok."}), 404
 
     # --- ARKA PLANDA ÇALIŞTIRMA ---
-    # İşlemi beklemiyoruz, arka plana atıp hemen "OK" dönüyoruz.
     app.add_background_task(broadcast_worker, tokens, message_text)
 
     return jsonify({
@@ -611,5 +621,5 @@ async def send_broadcast_message():
 # ------------------------------
 if __name__ == "__main__":
     print("Nova Web tam sürümü başlatıldı ✅")
-    # Quart'ı başlat
-    asyncio.run(app.run_task(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=False))
+    port = int(os.getenv("PORT", 5000))
+    asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=False))
