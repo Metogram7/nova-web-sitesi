@@ -1,6 +1,7 @@
-firebase-admin
-flask
 quart
 quart-cors
 aiohttp
+aiofiles
+firebase-admin
 werkzeug
+hypercorn
