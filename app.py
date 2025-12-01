@@ -211,12 +211,13 @@ GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key is not None]
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
-    """Mesajı işleyip Gemini API'den yanıt alır, güncel bilgi gerekiyorsa Google CSE ile destekler."""
+    """Mesajı işleyip Gemini API'den yanıt alır, gerekirse Google CSE ile destekler."""
 
+    # --- API KEY kontrolü ---
     if not GEMINI_API_KEYS:
         return "⚠️ Sistem Hatası: API Anahtarı bulunamadı (Render Environment Variables kontrol edin)."
 
-    # --- Google araması gereksinimi ---
+    # --- Google araması gerekip gerekmediğini algıla ---
     keywords = ["bugün", "güncel", "döviz", "euro", "dolar", "hava durumu", "skor", "haber", "son dakika"]
     use_google = any(kw in message.lower() for kw in keywords)
 
@@ -230,65 +231,93 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                 "num": 3
             }
             async with session.get("https://www.googleapis.com/customsearch/v1", params=params) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    items = data.get("items", [])
-                    results = []
-                    for it in items:
-                        title = it.get("title")
-                        snippet = it.get("snippet")
-                        link = it.get("link")
-                        results.append(f"{title}\n{snippet}\n{link}")
-                    if results:
-                        google_result_text = "Güncel bilgiler:\n" + "\n\n".join(results)
+                data = await resp.json()
+                items = data.get("items", [])
+
+                results = []
+                for it in items:
+                    title = it.get("title", "")
+                    snippet = it.get("snippet", "")
+                    link = it.get("link", "")
+                    results.append(f"{title}\n{snippet}\n{link}")
+
+                if results:
+                    google_result_text = "Güncel bilgiler:\n" + "\n\n".join(results)
+
         except Exception as e:
             google_result_text = f"❌ Google arama hatası: {e}"
 
-    # --- Gemini payload hazırlama ---
+    # --- Gemini için konuşma geçmişini formatla ---
     contents = []
     for msg in conversation[-15:]:
         role = "user" if msg["sender"] == "user" else "model"
-        if msg.get("content") and str(msg["content"]).strip():
-            contents.append({"role": role, "parts": [{"text": str(msg['content'])}]})
 
-    current_message_text = f"{user_name}: {message}" if user_name else f"Kullanıcı: {message}"
+        if msg.get("content"):
+            contents.append({
+                "role": role,
+                "parts": [{"text": str(msg["content"])}]
+            })
+
+    # --- Şuanki mesajı ekle ---
+    current_message_text = f"{user_name}: {message}" if user_name else message
+
+    # Google bilgisi varsa mesaja ekle
     if google_result_text:
-        current_message_text += f"\n\n{google_result_text}" 
-    contents.append({"role": "user", "parts": [{"text": current_message_text}]})
+        current_message_text += f"\n\n{google_result_text}"
 
+    contents.append({
+        "role": "user",
+        "parts": [{"text": current_message_text}]
+    })
+
+    # --- Gemini API payload ---
     payload = {
         "contents": contents,
-        # Düzeltme: system_instruction alanında doğru fonksiyon çağrılıyor
-        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192},
+        "system_instruction": {
+            "parts": [{"text": get_system_prompt()}]
+        },
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 8192
+        },
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
     }
 
-    # --- Gemini API çağrısı ---
+    # --- Gemini API çağrısı (retry + çoklu key) ---
     for key in GEMINI_API_KEYS:
-        if not key: continue
+        if not key:
+            continue
+
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+
         for attempt in range(1, 4):
             try:
                 async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=30) as resp:
                     if resp.status != 200:
                         continue
+
                     data = await resp.json()
                     candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        text = "".join(part.get("text", "") for part in parts if "text" in part).strip()
-                        if text:
-                            return text
+
+                    if not candidates:
+                        continue
+
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text = "".join(part.get("text", "") for part in parts).strip()
+
+                    if text:
+                        return text
+
             except Exception:
                 await asyncio.sleep(1)
                 continue
 
+    # Eğer hiçbir şekilde Gemini yanıt vermezse Google'ı ver
     if google_result_text:
         return google_result_text
 
