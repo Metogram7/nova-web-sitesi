@@ -294,6 +294,60 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 
     return "❌ Yanıt alınamadı."
 
+from quart import request, jsonify
+import aiohttp
+import json
+GEMINI_LIVE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-live:connect"
+
+@app.post("/live")
+async def nova_live_connect():
+    """
+    Frontend'den gelen WebRTC offer'ı alır
+    Google Gemini Live'a gönderir
+    SDP answer'ı geriye döndürür.
+    """
+    try:
+        data = await request.get_json()
+        offer_sdp = data.get("offer")
+
+        if not offer_sdp:
+            return jsonify({"error": "Offer SDP bulunamadı"}), 400
+
+        if not GEMINI_API_KEYS:
+            return jsonify({"error": "API anahtarları tanımlı değil"}), 500
+
+        # İlk çalışan API anahtarını kullan
+        api_key = GEMINI_API_KEYS[0]
+
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key
+        }
+
+        payload = {
+            "offer": {
+                "type": "offer",
+                "sdp": offer_sdp
+            }
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(GEMINI_LIVE_URL, headers=headers, json=payload) as resp:
+                if resp.status != 200:
+                    err = await resp.text()
+                    return jsonify({"error": "Gemini Live Hatası", "details": err}), 500
+
+                answer_data = await resp.json()
+                answer_sdp = answer_data.get("answer", {}).get("sdp")
+
+                if not answer_sdp:
+                    return jsonify({"error": "Geçerli answer SDP alınamadı"}), 500
+
+                return jsonify({"answer": answer_sdp})
+
+    except Exception as e:
+        return jsonify({"error": "Beklenmeyen bir hata oluştu", "details": str(e)}), 500
+
 
 # ------------------------------
 # Inaktif Kullanıcı Kontrolü
