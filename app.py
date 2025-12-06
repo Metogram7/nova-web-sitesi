@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from quart import Quart, request, jsonify, send_file
 from quart_cors import cors
 
-# E-posta/SMTP
+# E-posta/SMTP (Bloklamayan işlemler için tutuldu)
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -54,7 +54,32 @@ DIRTY_FLAGS = {
     "api_cache": False,
     "tokens": False
 }
-NOVA_DATE = "" # Başlangıçta hesaplanacak
+NOVA_DATE = "" 
+
+# ------------------------------------
+# FIREBASE BAŞLATMA İŞLEVİ (Taşındı)
+# ------------------------------------
+async def initialize_firebase_async():
+    """Firebase başlatma işlemini iş parçacığında çalıştırır."""
+    try:
+        if not firebase_admin._apps:
+            firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
+            
+            if firebase_creds_json:
+                # Bloklamayan JSON yükleme
+                cred_dict = await asyncio.to_thread(json.loads, firebase_creds_json)
+                cred = credentials.Certificate(cred_dict)
+                await asyncio.to_thread(firebase_admin.initialize_app, cred)
+                print("✅ Firebase: Env Var ile bağlandı.")
+            elif os.path.exists("serviceAccountKey.json"):
+                cred = credentials.Certificate("serviceAccountKey.json")
+                await asyncio.to_thread(firebase_admin.initialize_app, cred)
+                print("✅ Firebase: Dosya ile bağlandı.")
+            else:
+                print("⚠️ UYARI: Firebase dosyası veya ENV bulunamadı. Bildirimler çalışmayacak ama Chat çalışır.")
+    except Exception as e:
+        print(f"⚠️ Firebase başlatılamadı (Önemli değil, chat devam eder): {e}")
+
 
 # ------------------------------------
 # YAŞAM DÖNGÜSÜ
@@ -77,6 +102,9 @@ async def startup():
     
     await load_data_to_memory()
     
+    # 🔥 HATA ÇÖZÜMÜ: Firebase başlatma görevi olay döngüsüne eklendi
+    asyncio.create_task(initialize_firebase_async()) 
+
     asyncio.create_task(keep_alive())
     asyncio.create_task(background_save_worker())
 
@@ -100,7 +128,6 @@ async def load_data_to_memory():
                 async with aiofiles.open(filename, mode='r', encoding='utf-8') as f:
                     content = await f.read()
                     if content:
-                        # Bloklamayan yükleme
                         GLOBAL_CACHE[key] = await asyncio.to_thread(json.loads, content) 
             else:
                 async with aiofiles.open(filename, mode='w', encoding='utf-8') as f:
@@ -251,7 +278,6 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
             # Timeout 2 saniyeye çekildi (Agresif hız)
             async with session.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=2) as resp:
                 if resp.status == 200:
-                    # Bloklamayan JSON okuma
                     data = await asyncio.to_thread(resp.json)
                     items = data.get("items", [])
                     if items:
@@ -282,7 +308,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": system_prompt}]},
-        # Max token 2048'den 1024'e düşürüldü (Daha hızlı yanıt)
+        # Max token 1024'e düşürüldü (Daha hızlı yanıt)
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024}, 
     }
 
@@ -294,11 +320,9 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         # Timeout 8 saniyeye çekildi (Agresif hızlandırma)
         async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=8) as resp:
             if resp.status == 200:
-                # Bloklamayan JSON okuma
                 data = await asyncio.to_thread(resp.json)
                 return data["candidates"][0]["content"]["parts"][0]["text"].strip()
             else:
-                # Hata durumunda hemen geri dön
                 return f"⚠️ API hatası: {resp.status}"
 
     except Exception as e:
@@ -435,7 +459,6 @@ async def history():
 @app.route("/")
 async def home():
     return "Nova 3.1 Turbo Aktif 🚀 (ujson + AutoSession + Hız Optimizasyonları)"
-
 @app.route("/admin")
 async def admin_page():
     """Admin arayüzünü tarayıcıya gönderir."""
@@ -444,33 +467,9 @@ async def admin_page():
     else:
         return "Admin paneli dosyası (admin.html) bulunamadı!", 404
 
-
 # ------------------------------------
-# FIREBASE
+# FIREBASE BİLDİRİM VE ADMIN ROUTE'LARI
 # ------------------------------------
-async def initialize_firebase_async():
-    """Firebase başlatma işlemini iş parçacığında çalıştırır."""
-    try:
-        if not firebase_admin._apps:
-            firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
-            
-            if firebase_creds_json:
-                cred_dict = await asyncio.to_thread(json.loads, firebase_creds_json)
-                cred = credentials.Certificate(cred_dict)
-                await asyncio.to_thread(firebase_admin.initialize_app, cred)
-                print("✅ Firebase: Env Var ile bağlandı.")
-            elif os.path.exists("serviceAccountKey.json"):
-                cred = credentials.Certificate("serviceAccountKey.json")
-                await asyncio.to_thread(firebase_admin.initialize_app, cred)
-                print("✅ Firebase: Dosya ile bağlandı.")
-            else:
-                print("⚠️ UYARI: Firebase dosyası veya ENV bulunamadı. Bildirimler çalışmayacak ama Chat çalışır.")
-    except Exception as e:
-        print(f"⚠️ Firebase başlatılamadı (Önemli değil, chat devam eder): {e}")
-
-# Uygulama başlatma sırasında Firebase'i asenkron olarak başlat
-asyncio.create_task(initialize_firebase_async())
-
 
 @app.route("/api/subscribe", methods=["POST"])
 async def subscribe():
@@ -524,5 +523,4 @@ async def check_inactive_users():
 if __name__ == "__main__":
     print("Nova 3.1 Turbo Başlatılıyor... 🚀")
     port = int(os.getenv("PORT", 5000))
-    # debug=False modu performans için önemlidir
     asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=False))
