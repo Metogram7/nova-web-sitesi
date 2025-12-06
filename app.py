@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from quart import Quart, request, jsonify, send_file
 from quart_cors import cors
-from quart.datastructures import FileStorage # Import eksikliğini giderdim
+from quart.datastructures import FileStorage
 
 # --- Firebase Güvenli Import ---
 try:
@@ -89,7 +89,6 @@ async def init_firebase():
     try:
         fb_creds = os.getenv("FIREBASE_CREDENTIALS")
         if fb_creds:
-            # JSON formatında gelen env değişkenini yükle
             cred = credentials.Certificate(json.loads(fb_creds))
             firebase_admin.initialize_app(cred)
         elif os.path.exists("serviceAccountKey.json"):
@@ -117,8 +116,7 @@ async def load_data():
                     content = await f.read()
                     if content:
                         GLOBAL_CACHE[key] = json.loads(content)
-            except (IOError, json.JSONDecodeError): # Spesifik hata yakalama
-                # Dosya bozuksa yedeği yükle veya sıfırla
+            except (IOError, json.JSONDecodeError):
                 print(f"⚠️ {filename} bozuk veya okunamıyor, sıfırlanıyor.")
                 GLOBAL_CACHE[key] = [] if key == "tokens" else {}
             except Exception as e:
@@ -137,7 +135,6 @@ async def save_data(force=False):
     """Atomik yazma işlemi (Veri kaybını %0'a indirir)."""
     for key, filename in FILES.items():
         if DIRTY[key] or force:
-            # Not: Bir önceki satırda 'continue' kullanıldığı için bu if bloğu tekrar kontrol edildi.
             if not DIRTY[key] and not force:
                 continue 
             try:
@@ -161,7 +158,6 @@ def get_nova_date():
     return f"{now.day}.{now.month}.{now.year} {days[now.weekday()]}"
 
 def get_system_prompt():
-    # Prompt, içeriği korunarak son haline getirildi.
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın. 
 Seni Metehan Akkaya geliştirdi.
@@ -247,15 +243,14 @@ async def fast_google_search(query: str) -> str:
     if not session: return ""
     try:
         params = {"key": GOOGLE_KEY, "cx": GOOGLE_CX, "q": query, "num": 1}
-        # Timeout 2sn: Arama uzun sürerse bekleme, cevabı yapıştır.
         async with session.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=2) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 if "items" in data and data["items"]:
                     item = data["items"][0]
                     return f"Google Bilgisi: {item.get('title')} - {item.get('snippet')}"
-    except (asyncio.TimeoutError, aiohttp.ClientError): # Spesifik Ağ Hataları
-        pass # Hata olursa sessiz kal
+    except (asyncio.TimeoutError, aiohttp.ClientError): 
+        pass 
     except Exception as e:
         print(f"⚠️ Google Search genel hata: {e}")
         pass
@@ -291,30 +286,31 @@ async def generate_response(message: str, history: List[Dict[str, Any]], user_na
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        # Hız için maxOutputTokens sınırlandı, temperature düşürüldü
         "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024},
     }
 
-    # 3. Yedekli API Çağrısı (Failover)
+    # 3. Yedekli API Çağrısı (Failover) - Agresif Timeout 5 saniye
     for key in GEMINI_KEYS:
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
         try:
-            # 6 saniye timeout. Cevap gelmezse anında diğer anahtara geçer.
-            async with session.post(GEMINI_URL, headers=headers, json=payload, timeout=6) as resp:
+            # 5 saniye timeout. Cevap gelmezse anında diğer anahtara geçer.
+            async with session.post(GEMINI_URL, headers=headers, json=payload, timeout=5) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     candidates = data.get("candidates")
                     if candidates and len(candidates) > 0 and 'parts' in candidates[0]["content"]:
                         return candidates[0]["content"]["parts"][0]["text"].strip()
-                elif resp.status in [429, 500, 503]:
-                    continue # Rate limit veya sunucu hatası -> Sonraki anahtar
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            continue # Bağlantı/Timeout hatası -> Sonraki anahtar
+                elif resp.status in [429, 500, 503, 403]: 
+                    print(f"⚠️ API Key {key[:5]}... Kısıtlı ({resp.status}). Sonraki anahtara geçiliyor.")
+                    continue 
+        except (asyncio.TimeoutError, aiohttp.ClientError, ConnectionRefusedError):
+            print(f"⚠️ API Key {key[:5]}... Bağlantı/Timeout Hatası. Sonraki anahtara geçiliyor.")
+            continue
         except Exception as e:
             print(f"⚠️ Gemini genel hata: {e}")
-            continue # Genel hata -> Sonraki anahtar
+            continue
 
-    return "⚠️ Sistem şu an çok yoğun, lütfen kısa süre sonra tekrar dene."
+    return "⚠️ Sistem çok yoğun. Tüm API anahtarları kısıtlama altında veya ulaşılamıyor. Lütfen bir dakika sonra tekrar deneyin."
 
 # ------------------------------------
 # API ENDPOINTLERİ
@@ -322,13 +318,11 @@ async def generate_response(message: str, history: List[Dict[str, Any]], user_na
 @app.route("/api/chat", methods=["POST"])
 async def chat():
     try:
-        # JSONDecodeError yakalamak için request.get_json'ı try/except'e aldık
         try:
             data = await request.get_json(force=True)
         except Exception:
             return jsonify({"response": "⚠️ Geçersiz JSON formatı."}), 400
         
-        # Güvenli ID Yönetimi
         user_id = data.get("userId") or str(uuid.uuid4())
         chat_id = data.get("currentChat") or str(uuid.uuid4())
         message = (data.get("message") or "").strip()
@@ -425,7 +419,7 @@ async def delete_chat():
             del GLOBAL_CACHE["history"][u][c]
             DIRTY["history"] = True
         return jsonify({"success": True})
-    except Exception as e: # Genel except yerine spesifik hata yakalama eklendi.
+    except Exception as e: 
         print(f"⚠️ Chat silme hatası: {e}")
         return jsonify({"error": "Silme hatası"}), 500
 
@@ -436,7 +430,7 @@ async def get_history():
 
 @app.route("/")
 async def home():
-    return "Nova Turbo v4.2 Running ⚡"
+    return "Nova Turbo v4.3 Running ⚡"
 
 # --- Admin & Broadcast ---
 @app.route("/api/subscribe", methods=["POST"])
@@ -458,12 +452,10 @@ async def send_push(msg_text: str):
             notification=messaging.Notification(title="Nova", body=msg_text),
             tokens=GLOBAL_CACHE["tokens"]
         )
-        # await asyncio.to_thread, send_multicast'ı engellemeyen bir şekilde çalıştırmasını sağlar.
         await asyncio.to_thread(messaging.send_multicast, msg) 
     except Exception as e:
-        # Firebase hatası (geçersiz token, bağlantı vb.)
         print(f"⚠️ Firebase bildirim hatası: {e}")
-        pass # Hata olursa sessiz kalıp devam et
+        pass
 
 @app.route("/api/admin/broadcast", methods=["POST"])
 async def broadcast():
@@ -472,28 +464,23 @@ async def broadcast():
         if d.get("password") != "sd157metehanak": return jsonify({"error": "Yetkisiz"}), 403
         app.add_background_task(send_push, d.get("message"))
         return jsonify({"success": True})
-    except Exception as e: # Genel except yerine spesifik hata yakalama
-        print(f"⚠️ Broadcast hata: {e}")
+    except Exception as e:
+        print(f"⚠️ Yayın hatası: {e}")
         return jsonify({"error": "Yayın hatası"}), 500
 
 async def keep_alive():
     """Render gibi platformlarda uygulamanın uyumasını engeller."""
-    url = "https://nova-chat-d50f.onrender.com"
+    # Kendi URL'nizi buraya yazmayı unutmayın.
+    url = "https://nova-chat-d50f.onrender.com" 
     while True:
-        await asyncio.sleep(600)
+        await asyncio.sleep(480) # 8 dakikada bir uyandır
         try:
-            # session global bir değişken olduğundan None kontrolü kritik
             if session: 
-                # session.get'in sonucunu bir değişkene atamak veya içeriğini kullanmak zorunda değiliz,
-                # sadece bağlantının kurulup kapanmasını sağlıyoruz.
-                async with session.get(url) as r:
-                    await r.text() # Bağlantıyı tamamen bitirip serbest bırakmak için içeriği oku
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            pass
-        except Exception as e:
-            print(f"⚠️ Keep-Alive hatası: {e}")
+                async with session.get(url, timeout=10) as r:
+                    await r.text() 
+        except (asyncio.TimeoutError, aiohttp.ClientError, Exception):
+            pass 
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    # debug=False performansı artırır.
     asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=False))
