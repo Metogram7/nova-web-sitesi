@@ -412,6 +412,14 @@ async def history():
 @app.route("/")
 async def home():
     return "Nova 3.1 Turbo Aktif 🚀 (ujson + AutoSession)"
+# --- ADMIN PANELİ SAYFASI ---
+@app.route("/admin")
+async def admin_page():
+    # admin.html dosyasını tarayıcıya gönderir
+    if os.path.exists("admin.html"):
+        return await send_file("admin.html")
+    else:
+        return "Admin paneli dosyası (admin.html) bulunamadı!", 404      
 
 # ------------------------------------
 # FIREBASE HATASI GİDERME
