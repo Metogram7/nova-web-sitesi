@@ -413,13 +413,20 @@ async def history():
 async def home():
     return "Nova 3.1 Turbo Aktif 🚀 (ujson + AutoSession)"
 # --- ADMIN PANELİ SAYFASI ---
+# ------------------------------
+# API ROUTE'LARINDAN SONRA EKLEYİN
+# ------------------------------
+
+# --- ADMIN PANELİ SAYFASI İÇİN YOL TARİFİ ---
 @app.route("/admin")
 async def admin_page():
-    # admin.html dosyasını tarayıcıya gönderir
+    """Admin arayüzünü tarayıcıya gönderir."""
+    # admin.html dosyasını arar ve gönderir.
     if os.path.exists("admin.html"):
         return await send_file("admin.html")
     else:
-        return "Admin paneli dosyası (admin.html) bulunamadı!", 404      
+        return "Admin paneli dosyası (admin.html) bulunamadı!", 404
+
 
 # ------------------------------------
 # FIREBASE HATASI GİDERME
