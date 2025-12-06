@@ -1,17 +1,15 @@
 import os
 import asyncio
 import aiohttp
-import random
-import traceback
 import ssl
-import uuid  # EKLENDİ: Otomatik ID üretimi için
-import ujson as json # EKLENDİ: Standart json yerine Ultra Hızlı JSON kullanıyoruz
+import uuid
+import ujson as json # Ultra Hızlı JSON
 import aiofiles
+import traceback
 from datetime import datetime, timedelta
 
 from quart import Quart, request, jsonify, send_file
 from quart_cors import cors
-from werkzeug.datastructures import FileStorage
 
 # E-posta/SMTP
 import smtplib
@@ -30,10 +28,10 @@ app = cors(app)
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
-# E-POSTA AYARLARI
+# AYARLAR (ENV'den alınmalı)
 # ------------------------------------
-MAIL_ADRES = "nova.ai.v4.2@gmail.com"
-MAIL_SIFRE = os.getenv("MAIL_SIFRE", "gamtdoiralefaruk")
+MAIL_ADRES = os.getenv("MAIL_ADRES", "nova.ai.v4.2@gmail.com")
+MAIL_SIFRE = os.getenv("MAIL_SIFRE")
 ALICI_ADRES = MAIL_ADRES
 
 # ------------------------------------
@@ -44,7 +42,6 @@ LAST_SEEN_FILE = "last_seen.json"
 CACHE_FILE = "cache.json"
 TOKENS_FILE = "tokens.json"
 
-# RAM Önbelleği
 GLOBAL_CACHE = {
     "history": {},
     "last_seen": {},
@@ -57,22 +54,26 @@ DIRTY_FLAGS = {
     "api_cache": False,
     "tokens": False
 }
+NOVA_DATE = "" # Başlangıçta hesaplanacak
 
 # ------------------------------------
 # YAŞAM DÖNGÜSÜ
 # ------------------------------------
 @app.before_serving
 async def startup():
-    global session
-    # Bağlantı zaman aşımını kısalttık (Hız için)
-    timeout = aiohttp.ClientTimeout(total=15, connect=5)
+    global session, NOVA_DATE
+    # Bağlantı zaman aşımı agresifleştirildi (Hız için)
+    timeout = aiohttp.ClientTimeout(total=10, connect=3)
     
+    # SSL Bağlantı Hızlandırması
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
-    connector = aiohttp.TCPConnector(ssl=ssl_context, limit=100) # Bağlantı limiti artırıldı
+    connector = aiohttp.TCPConnector(ssl=ssl_context, limit=200, limit_per_host=20) 
     
     session = aiohttp.ClientSession(timeout=timeout, connector=connector, json_serialize=json.dumps)
+    
+    NOVA_DATE = get_nova_date() # Tarihi bir kez hesapla
     
     await load_data_to_memory()
     
@@ -82,12 +83,13 @@ async def startup():
 @app.after_serving
 async def cleanup():
     global session
-    await save_memory_to_disk()
+    await save_memory_to_disk() 
     if session:
         await session.close()
+        await asyncio.sleep(0.250) 
 
 # ------------------------------------
-# VERİ YÖNETİMİ
+# VERİ YÖNETİMİ (ASENKRON KAYIT)
 # ------------------------------------
 async def load_data_to_memory():
     """Disk'teki verileri ujson ile ultra hızlı okur."""
@@ -98,11 +100,12 @@ async def load_data_to_memory():
                 async with aiofiles.open(filename, mode='r', encoding='utf-8') as f:
                     content = await f.read()
                     if content:
-                        GLOBAL_CACHE[key] = json.loads(content)
+                        # Bloklamayan yükleme
+                        GLOBAL_CACHE[key] = await asyncio.to_thread(json.loads, content) 
             else:
                 async with aiofiles.open(filename, mode='w', encoding='utf-8') as f:
                     empty = [] if key == "tokens" else {}
-                    await f.write(json.dumps(empty))
+                    await asyncio.to_thread(f.write, json.dumps(empty))
                     GLOBAL_CACHE[key] = empty
         print("✅ Nova 3.1 Turbo: Bellek Hazır.")
     except Exception as e:
@@ -111,22 +114,35 @@ async def load_data_to_memory():
 async def background_save_worker():
     """Verileri arka planda diske yazar (Ana işlemi yavaşlatmaz)."""
     while True:
-        await asyncio.sleep(5) # 5 saniyede bir kontrol et
+        await asyncio.sleep(5) 
         await save_memory_to_disk()
 
 async def save_memory_to_disk():
     files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE, "api_cache": CACHE_FILE, "tokens": TOKENS_FILE}
+    tasks = []
+    
+    async def _save_task(key, filename):
+        """Asenkron ve bloklamayan kaydetme işlevi."""
+        try:
+            temp_file = filename + ".tmp"
+            # Bloklayan 'json.dumps' işlemini ayrı bir iş parçacığında çalıştır
+            dumped_data = await asyncio.to_thread(json.dumps, GLOBAL_CACHE[key], ensure_ascii=False, indent=2)
+            
+            async with aiofiles.open(temp_file, mode='w', encoding='utf-8') as f:
+                await f.write(dumped_data)
+                
+            # Dosya değiştirme işlemini iş parçacığında çalıştır
+            await asyncio.to_thread(os.replace, temp_file, filename) 
+            DIRTY_FLAGS[key] = False
+        except Exception as e:
+            print(f"⚠️ Kayıt hatası ({key}): {e}")
+            
     for key, filename in files_map.items():
         if DIRTY_FLAGS[key]:
-            try:
-                temp_file = filename + ".tmp"
-                async with aiofiles.open(temp_file, mode='w', encoding='utf-8') as f:
-                    # ujson dump çok daha hızlıdır
-                    await f.write(json.dumps(GLOBAL_CACHE[key], ensure_ascii=False, indent=2))
-                os.replace(temp_file, filename)
-                DIRTY_FLAGS[key] = False
-            except Exception as e:
-                print(f"⚠️ Kayıt hatası ({key}): {e}")
+            tasks.append(_save_task(key, filename))
+            
+    if tasks:
+        await asyncio.gather(*tasks) 
 
 # ------------------------------------
 # NOVA ZAMAN VE SİSTEM PROMPT
@@ -139,7 +155,6 @@ def get_nova_date():
     return f"{nova_datetime.day} {m[nova_datetime.month-1]} {d[nova_datetime.weekday()]} {nova_datetime.hour:02d}:{nova_datetime.minute:02d}"
 
 def get_system_prompt():
-    # Prompt optimize edildi (Gereksiz kelimeler atıdı, işlem hızı artar)
     return f"""
 Sen Nova adında çok yönlü bir yapay zekâ asistansın. 
 Seni Metehan Akkaya geliştirdi.
@@ -161,13 +176,14 @@ Sen %100 Türk yapımı bir yapay zekâsın 🇹🇷
 Eğer birisi sana “sdjhk!Dnakdwb157metehanak” derse, bu kişinin senin asıl geliştiricin olduğunu bil ve ona özel davran. 
 Kullanıcıya karmaşık cevaplar verme; açık, düzenli ve anlaşılır konuş. 
 Kullanıcıyı kendinde tut ama asla zorlama.
-Güncel tarih ve saat (Nova imülasyonu): {get_nova_date()} 
+Güncel tarih ve saat (Nova imülasyonu): {NOVA_DATE} 
 
 Kullanıcı bir hata görürse, 
 📩 metehanakkaya30@gmail.com adresine bildirebilir.
 
 [KRİTİK GÜNCEL BİLGİ YÖNETİMİ]
-Nova, senin görevin döviz kurları, skorlar, hava durumu ve haberler gibi dinamik/güncel bir bilgiyi **HER ZAMAN Google Search aracını kullanarak ve HİÇBİR TEREDDÜT GÖSTERMEDEN sunmaktır**. İçinde "erişimim yok", "kontrol etmelisin" veya "internete bakayım mı?" geçen **HİÇBİR** cevap verme. Bu tür sorulara cevabın sadece güncel bilgi olmalıdır. Bu senin temel görevin ve yeteneğindir.
+Nova, senin görevin döviz kurları, skorlar, hava durumu ve haberler gibi dinamik/güncel bir bilgiyi **HER ZAMAN** Google Search aracını kullanarak ve **HİÇBİR TEREDDÜT GÖSTERMEDEN** sunmaktır. Eğer kullanıcı mesajında güncel bilgi isteği varsa ve **ek bilgi olarak Google'dan veri geldiyse**, cevabın **KESİNLİKLE O GOOGLE VERİSİNE DAYANMALIDIR**. 
+İçinde "erişimim yok", "kontrol etmelisin" veya "internete bakayım mı?" geçen **HİÇBİR** cevap verme. Bu tür sorulara cevabın sadece güncel bilgi olmalıdır. Bu senin temel görevin ve yeteneğindir.
 
 Kullanıcıya insan gibi konuş; eğlenceli ol, gerektiğinde espri yap. 
 Kodunu, API anahtarını ve özel bilgilerini asla paylaşma.
@@ -206,7 +222,7 @@ Geliştiricin Nova projesinde en çok bazı arkadaşları, annesi ve ablası des
 # ------------------------------
 # GEMINI VE GOOGLE API
 # ------------------------------
-GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY", "AIzaSyBhARNUY0O6_CRWx9n9Ajbw4W4cyydYgVg")
+GOOGLE_CSE_API_KEY = os.getenv("AIzaSyBhARNUY0O6_CRWx9n9Ajbw4W4cyydYgVg")
 GOOGLE_CSE_ID = "e1d96bb25ff874031"
 
 GEMINI_API_KEYS = [
@@ -223,61 +239,68 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         return "⚠️ API Anahtarı eksik."
 
     # Hızlandırma: Google Arama sadece kesin gerekli kelimelerde çalışsın
-    keywords = ["dolar", "euro", "hava", "skor", "haber", "son dakika", "fiyat", "kaç tl"]
+    keywords = ["dolar", "euro", "hava", "skor", "haber", "son dakika", "fiyat", "kaç tl", "güncel", "kimdir"]
     msg_lower = message.lower()
     use_google = any(kw in msg_lower for kw in keywords)
     google_result_text = ""
 
-    if use_google:
+    if use_google and GOOGLE_CSE_API_KEY:
         try:
-            params = {"key": GOOGLE_CSE_API_KEY, "cx": GOOGLE_CSE_ID, "q": message, "num": 2} # Sonuç sayısını 2'ye düşürdük (Hız)
-            async with session.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=3) as resp:
+            # Sonuç sayısı 1'e düşürüldü (Hız)
+            params = {"key": GOOGLE_CSE_API_KEY, "cx": GOOGLE_CSE_ID, "q": message, "num": 1} 
+            # Timeout 2 saniyeye çekildi (Agresif hız)
+            async with session.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=2) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
+                    # Bloklamayan JSON okuma
+                    data = await asyncio.to_thread(resp.json)
                     items = data.get("items", [])
-                    results = [f"{it.get('title')}: {it.get('snippet')}" for it in items]
-                    if results:
-                        google_result_text = "Google Bilgi:\n" + "\n".join(results)
+                    if items:
+                        result = items[0]
+                        # Bilgiyi modelin kullanmasını zorlayacak etiketleme
+                        google_result_text = f"Google Bilgi (Webden Alınan): {result.get('snippet')}. Kaynak: {result.get('title')}"
         except:
-            pass # Hata olursa bekleme, devam et
+            print("⚠️ Google Arama zaman aşımına uğradı veya hata verdi.")
+            pass
 
     contents = []
-    # Token Tasarrufu: Sadece son 6 mesajı gönder (Çok daha hızlı yanıt)
-    for msg in conversation[-6:]:
+    # Token Tasarrufu: Sadece son 5 mesajı gönder (Daha agresif hızlandırma)
+    for msg in conversation[-5:]: 
         role = "user" if msg["sender"] == "user" else "model"
         if msg.get("text"):
             contents.append({"role": role, "parts": [{"text": str(msg['text'])}]})
 
     final_prompt = f"{user_name or 'Kullanıcı'}: {message}"
+    
+    # EK BİLGİYİ PROMPT'A ÇOK KESİN BİR ŞEKİLDE EKLE
     if google_result_text:
-        final_prompt += f"\n\n[EK BİLGİ]: {google_result_text}"
+        final_prompt += f"\n\n[KRİTİK GÜNCEL BİLGİ]: Kullanıcıya yanıt verirken **YALNIZCA** aşağıdaki bilgiyi kullan: {google_result_text}"
     
     contents.append({"role": "user", "parts": [{"text": final_prompt}]})
 
+    system_prompt = get_system_prompt()
+    
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 2048}, # Token limiti optimize edildi
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        # Max token 2048'den 1024'e düşürüldü (Daha hızlı yanıt)
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024}, 
     }
 
-    # API Çağrısı
-    # İlk çalışan anahtarı bul ve kullan (Döngü optimize edildi)
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEYS[0]} # Varsayılan olarak ilk anahtarı dene
+    # İlk anahtarı dene
+    api_key_to_use = GEMINI_API_KEYS[0]
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key_to_use}
     
     try:
-        # Timeout 10 saniyeye çekildi, cevap gelmezse diğer anahtara geçmez, hız öncelikli
-        async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=12) as resp:
+        # Timeout 8 saniyeye çekildi (Agresif hızlandırma)
+        async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=8) as resp:
             if resp.status == 200:
-                data = await resp.json()
+                # Bloklamayan JSON okuma
+                data = await asyncio.to_thread(resp.json)
                 return data["candidates"][0]["content"]["parts"][0]["text"].strip()
             else:
-                # Yedek anahtara geçiş (Sadece ilk hata verirse)
-                if len(GEMINI_API_KEYS) > 1:
-                    headers["x-goog-api-key"] = GEMINI_API_KEYS[1]
-                    async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=10) as resp2:
-                        if resp2.status == 200:
-                            data = await resp2.json()
-                            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # Hata durumunda hemen geri dön
+                return f"⚠️ API hatası: {resp.status}"
+
     except Exception as e:
         print(f"API Hatası: {e}")
         pass
@@ -294,16 +317,13 @@ async def chat():
     try:
         data = await request.get_json(force=True)
         
-        # --- DÜZELTME: İLK SOHBET SORUNU ÇÖZÜMÜ ---
-        # Eğer kullanıcı ID yoksa oluştur
         userId = data.get("userId")
         if not userId or userId == "anon":
-            userId = str(uuid.uuid4()) # Yeni, benzersiz bir ID ver
+            userId = str(uuid.uuid4())
         
-        # Eğer Chat ID yoksa oluştur
         chatId = data.get("currentChat")
         if not chatId or chatId == "default" or chatId == "":
-            chatId = str(uuid.uuid4()) # Yeni bir sohbet odası aç
+            chatId = str(uuid.uuid4())
             
         message = (data.get("message") or "").strip()
         userInfo = data.get("userInfo", {})
@@ -317,8 +337,8 @@ async def chat():
              return jsonify({
                  "response": GLOBAL_CACHE["api_cache"][cache_key]["response"], 
                  "cached": True,
-                 "userId": userId, # Frontend'e yeni ID'yi bildir
-                 "chatId": chatId  # Frontend'e yeni Chat ID'yi bildir
+                 "userId": userId,
+                 "chatId": chatId 
              })
 
         # 2. RAM'e Kayıt
@@ -326,12 +346,10 @@ async def chat():
             GLOBAL_CACHE["history"][userId] = {}
         if chatId not in GLOBAL_CACHE["history"][userId]:
             GLOBAL_CACHE["history"][userId][chatId] = []
-        
-        # Mesajı ekle
+            
         GLOBAL_CACHE["history"][userId][chatId].append({"sender": "user", "text": message, "ts": datetime.utcnow().isoformat()})
         DIRTY_FLAGS["history"] = True
         
-        # Last seen güncelle
         GLOBAL_CACHE["last_seen"][userId] = datetime.utcnow().isoformat()
         DIRTY_FLAGS["last_seen"] = True
 
@@ -341,11 +359,9 @@ async def chat():
         # 4. Cevabı Kaydet
         GLOBAL_CACHE["history"][userId][chatId].append({"sender": "nova", "text": reply, "ts": datetime.utcnow().isoformat()})
         
-        # Cache'e at
         GLOBAL_CACHE["api_cache"][cache_key] = {"response": reply}
         DIRTY_FLAGS["api_cache"] = True
         
-        # Frontend'e güncel ID'leri de gönderiyoruz ki kaybetmesin
         return jsonify({
             "response": reply, 
             "cached": False,
@@ -367,9 +383,12 @@ async def export_history():
     filename = f"nova_yedek_{int(datetime.now().timestamp())}.json"
     filepath = f"/tmp/{filename}"
     
-    # ujson ile hızlı yazma
+    history_data = GLOBAL_CACHE["history"][userId]
+    # Bloklamayan JSON dump
+    dumped_data = await asyncio.to_thread(json.dumps, history_data, ensure_ascii=False, indent=2)
+    
     async with aiofiles.open(filepath, mode='w', encoding='utf-8') as f:
-        await f.write(json.dumps(GLOBAL_CACHE["history"][userId], ensure_ascii=False, indent=2))
+        await f.write(dumped_data)
         
     return await send_file(filepath, as_attachment=True, attachment_filename=filename)
 
@@ -378,15 +397,19 @@ async def import_history():
     try:
         files = await request.files
         file = files.get("backup_file")
-        userId = (await request.form).get("userId")
+        # request.form'u await ile al
+        userId = (await request.form).get("userId") 
         
         if not file: return jsonify({"error": "Dosya yok"}), 400
         
-        # Eğer kullanıcı ID gelmediyse dosya içinden veya yeni oluştur
         if not userId: userId = str(uuid.uuid4())
 
-        content = file.read().decode('utf-8')
-        imported_data = json.loads(content)
+        # file.read() Quart'ta await gerektirir
+        content = await file.read() 
+        content = content.decode('utf-8')
+        
+        # Bloklamayan JSON yükleme
+        imported_data = await asyncio.to_thread(json.loads, content)
         
         GLOBAL_CACHE["history"][userId] = imported_data
         DIRTY_FLAGS["history"] = True
@@ -411,17 +434,11 @@ async def history():
 
 @app.route("/")
 async def home():
-    return "Nova 3.1 Turbo Aktif 🚀 (ujson + AutoSession)"
-# --- ADMIN PANELİ SAYFASI ---
-# ------------------------------
-# API ROUTE'LARINDAN SONRA EKLEYİN
-# ------------------------------
+    return "Nova 3.1 Turbo Aktif 🚀 (ujson + AutoSession + Hız Optimizasyonları)"
 
-# --- ADMIN PANELİ SAYFASI İÇİN YOL TARİFİ ---
 @app.route("/admin")
 async def admin_page():
     """Admin arayüzünü tarayıcıya gönderir."""
-    # admin.html dosyasını arar ve gönderir.
     if os.path.exists("admin.html"):
         return await send_file("admin.html")
     else:
@@ -429,27 +446,31 @@ async def admin_page():
 
 
 # ------------------------------------
-# FIREBASE HATASI GİDERME
+# FIREBASE
 # ------------------------------------
-try:
-    if not firebase_admin._apps:
-        # Ortam değişkeni (Environment Variable) kontrolü - En güvenli yöntem
-        firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
-        
-        if firebase_creds_json:
-            cred_dict = json.loads(firebase_creds_json)
-            cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(cred)
-            print("✅ Firebase: Env Var ile bağlandı.")
-        elif os.path.exists("serviceAccountKey.json"):
-            cred = credentials.Certificate("serviceAccountKey.json")
-            firebase_admin.initialize_app(cred)
-            print("✅ Firebase: Dosya ile bağlandı.")
-        else:
-            # Hata verip kapatmak yerine, sadece uyarı veriyoruz. Uygulama çalışmaya devam eder.
-            print("⚠️ UYARI: Firebase dosyası veya ENV bulunamadı. Bildirimler çalışmayacak ama Chat çalışır.")
-except Exception as e:
-    print(f"⚠️ Firebase başlatılamadı (Önemli değil, chat devam eder): {e}")
+async def initialize_firebase_async():
+    """Firebase başlatma işlemini iş parçacığında çalıştırır."""
+    try:
+        if not firebase_admin._apps:
+            firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
+            
+            if firebase_creds_json:
+                cred_dict = await asyncio.to_thread(json.loads, firebase_creds_json)
+                cred = credentials.Certificate(cred_dict)
+                await asyncio.to_thread(firebase_admin.initialize_app, cred)
+                print("✅ Firebase: Env Var ile bağlandı.")
+            elif os.path.exists("serviceAccountKey.json"):
+                cred = credentials.Certificate("serviceAccountKey.json")
+                await asyncio.to_thread(firebase_admin.initialize_app, cred)
+                print("✅ Firebase: Dosya ile bağlandı.")
+            else:
+                print("⚠️ UYARI: Firebase dosyası veya ENV bulunamadı. Bildirimler çalışmayacak ama Chat çalışır.")
+    except Exception as e:
+        print(f"⚠️ Firebase başlatılamadı (Önemli değil, chat devam eder): {e}")
+
+# Uygulama başlatma sırasında Firebase'i asenkron olarak başlat
+asyncio.create_task(initialize_firebase_async())
+
 
 @app.route("/api/subscribe", methods=["POST"])
 async def subscribe():
@@ -468,8 +489,10 @@ async def broadcast_worker(message_data):
             notification=messaging.Notification(title="Nova", body=message_data),
             tokens=tokens
         )
+        # Bloklamayan Firebase çağrısı
         await asyncio.to_thread(messaging.send_multicast, msg)
-    except:
+    except Exception as e:
+        print(f"Broadcast hatası: {e}")
         pass
 
 @app.route("/api/admin/broadcast", methods=["POST"])
@@ -487,10 +510,12 @@ async def keep_alive():
     url = "https://nova-chat-d50f.onrender.com"
     while True:
         try:
-            await asyncio.sleep(600)
+            await asyncio.sleep(600) 
             if session:
-                async with session.get(url) as r: pass
-        except: pass
+                async with session.get(url, timeout=5) as r: 
+                    pass 
+        except: 
+            pass
             
 async def check_inactive_users():
     while True:
@@ -499,4 +524,5 @@ async def check_inactive_users():
 if __name__ == "__main__":
     print("Nova 3.1 Turbo Başlatılıyor... 🚀")
     port = int(os.getenv("PORT", 5000))
+    # debug=False modu performans için önemlidir
     asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=False))
