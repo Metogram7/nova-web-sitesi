@@ -215,67 +215,47 @@ GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key is not None]
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
+    """
+    Nova'nın Gemini API üzerinden cevap üretme fonksiyonu.
+    Hataları loglar ve API key eksikliğinde kullanıcıyı uyarır.
+    """
     if not GEMINI_API_KEYS:
-        return "⚠️ API Anahtarı eksik."
-
-    # Hızlandırma: Sadece gerekli durumlarda Google araması yap
-    keywords = ["dolar", "euro", "hava", "skor", "haber", "son dakika", "fiyat", "kaç tl", "bugün"]
-    msg_lower = message.lower()
-    use_google = any(kw in msg_lower for kw in keywords)
-    google_result_text = ""
-
-    if use_google:
-        try:
-            params = {"key": GOOGLE_CSE_API_KEY, "cx": GOOGLE_CSE_ID, "q": message, "num": 1} # Hız için 1 sonuç yeter
-            # Timeout 3 saniye yapıldı, cevap gelmezse sistemi bekletme
-            async with session.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=3) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    items = data.get("items", [])
-                    if items:
-                        item = items[0]
-                        google_result_text = f"Google Bilgi: {item.get('title')} - {item.get('snippet')}"
-        except:
-            pass # Hata olursa sessizce devam et
-
-    contents = []
-    # Token Tasarrufu ve Hız: Sadece son 5 mesajı gönder (Context window optimization)
-    # Tüm geçmişi göndermek işlemi yavaşlatır.
-    recent_history = conversation[-5:]
+        return "⚠️ Gemini API anahtarı eksik. Lütfen .env dosyasına ekleyin."
     
+    # Son 5 mesajı gönder (context optimization)
+    recent_history = conversation[-5:]
+    contents = []
     for msg in recent_history:
         role = "user" if msg["sender"] == "user" else "model"
         if msg.get("text"):
             contents.append({"role": role, "parts": [{"text": str(msg['text'])}]})
-
-    final_prompt = f"{user_name or 'Kullanıcı'}: {message}"
-    if google_result_text:
-        final_prompt += f"\n\n[SİSTEM NOTU - GÜNCEL VERİ]: {google_result_text}"
     
+    # Kullanıcı mesajını ekle
+    final_prompt = f"{user_name or 'Kullanıcı'}: {message}"
     contents.append({"role": "user", "parts": [{"text": final_prompt}]})
 
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        # Token limitini ideal seviyeye çektik
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024},
     }
 
-    # API Çağrısı - KEY ROTASYONU (Sırayla dener)
+    # API key sırasıyla deneniyor
     for api_key in GEMINI_API_KEYS:
         headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
         try:
-            # Timeout 8 saniyeye çekildi. Çok bekletmesin, diğer anahtara geçsin.
-            async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=8) as resp:
+            async with session.post(GEMINI_API_URL, headers=headers, json=payload, timeout=20) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if "candidates" in data and len(data["candidates"]) > 0:
                         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
                 else:
-                    # 429 (Too Many Requests) veya 500 hatası gelirse döngü devam eder, diğer anahtarı dener.
-                    continue
-        except Exception:
-            continue # Bağlantı hatası olursa diğer anahtarı dene
+                    # Status kodu 200 değilse logla
+                    print(f"⚠️ Gemini API Hatası: Status {resp.status}, Message: {await resp.text()}")
+        except Exception as e:
+            # Bağlantı hatasını logla ve diğer anahtara geç
+            print(f"⚠️ Gemini API bağlantı hatası: {e}")
+            continue
 
     return "⚠️ Şu an sistem çok yoğun veya bağlantı kurulamadı. Lütfen tekrar dene."
 
