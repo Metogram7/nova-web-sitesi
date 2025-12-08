@@ -334,12 +334,12 @@ async def chat():
         GLOBAL_CACHE["history"][userId][chatId].append({
             "sender": "user", 
             "text": message, 
-            "ts": datetime.utcnow().isoformat()
+            "ts": datetime.now(datetime.UTC).isoformat()
         })
         DIRTY_FLAGS["history"] = True
         
         # Last seen güncelle
-        GLOBAL_CACHE["last_seen"][userId] = datetime.utcnow().isoformat()
+        GLOBAL_CACHE["last_seen"][userId] = datetime.now(datetime.UTC).isoformat()
         DIRTY_FLAGS["last_seen"] = True
 
         # 3. Cevap Üret
@@ -349,7 +349,7 @@ async def chat():
         GLOBAL_CACHE["history"][userId][chatId].append({
             "sender": "nova", 
             "text": reply, 
-            "ts": datetime.utcnow().isoformat()
+            "ts": datetime.now(datetime.UTC).isoformat()
         })
         
         # Cache'e at
