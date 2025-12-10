@@ -6,3 +6,4 @@ firebase-admin
 werkzeug
 hypercorn
 ujson
+google-genai
