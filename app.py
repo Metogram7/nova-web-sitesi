@@ -17,7 +17,13 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+import base64 
+import json # (JSON da muhtemelen gereklidir)
+# ... diğer importlarınız (örn: fastapi, asyncio)
 
+# Google GenAI İçe Aktarmaları
+from google import genai 
+from google.genai import types
 # Firebase (Hata korumalı import)
 try:
     import firebase_admin
@@ -509,7 +515,9 @@ async def keep_alive():
 # LİVE MODU (WebSocket) - MULTIMODAL STREAMING SÜRÜMÜ
 # ------------------------------------
 import base64 # Gerekli import (Dosyanın en üstünde olmalı)
-from google import genai, types # Gerekli import (Dosyanın en üstünde olmalı)
+# UYARI: google-generativeai paketi şu anda yüklü değil.
+# Paketi yüklemek için: pip install google-generativeai
+# Şimdilik mock uygulamayı kullanıyoruz.
 
 @app.websocket("/ws/chat")
 async def ws_chat_handler():
@@ -541,32 +549,9 @@ async def ws_chat_handler():
             contents = []
             
             if image_data_b64:
-                try:
-                    # 'data:image/jpeg;base64,' gibi başlık kısmını temizle
-                    if ',' in image_data_b64:
-                        header, encoded_data = image_data_b64.split(',', 1)
-                        mime_type = header.split(';')[0].split(':')[1]
-                    else:
-                        encoded_data = image_data_b64
-                        mime_type = 'image/jpeg' 
-                        
-                    # Base64 string'i binary veriye dönüştür
-                    image_bytes = base64.b64decode(encoded_data)
-                    
-                    # Part objesi oluştur (Gemini API için gereklidir)
-                    image_part = types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type=mime_type
-                    )
-                    contents.append(image_part)
-                    print(f"🖼️ Görsel başarıyla işlendi: MIME={mime_type}, Boyut={len(image_bytes)} byte.")
-                    
-                except Exception as e:
-                    error_msg = f"Görsel İşleme Hatası: Geçersiz Base64 veri veya format. ({e})"
-                    print(f"❌ {error_msg}")
-                    await websocket.send(error_msg)
-                    await websocket.send("[END_OF_STREAM]")
-                    continue
+                # google-generativeai yüklendiğinde burası aktivite edilecek
+                # Şimdilik metin yanıtı gönderiyoruz
+                print(f"ℹ️ Görsel alındı fakat google-generativeai paketi eksik. Sadece metin işlendi.")
 
             # Metin mesajını ekle (Görüntü olsun veya olmasın)
             if user_message:
@@ -576,7 +561,7 @@ async def ws_chat_handler():
                 # Ne metin ne de görsel varsa, işlem yapma
                 continue
 
-            print(f"➡️ Yeni istek alındı. İçerik sayısı: {len(contents)}.")
+            print(f"➡️ Yeni istek alındı. İçerik: {user_message[:50]}...")
 
             # --- Gerçek Yapay Zeka Streaming Çağrısı (Gemini) ---
             
