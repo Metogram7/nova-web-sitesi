@@ -7,8 +7,7 @@ import ssl
 import uuid
 import ujson as json  # EKLENDİ: Standart json yerine Ultra Hızlı JSON
 import aiofiles
-from datetime import datetime
-
+from datetime import datetime, timezone
 from quart import Quart, request, jsonify, send_file
 from quart_cors import cors
 from werkzeug.datastructures import FileStorage
@@ -334,12 +333,13 @@ async def chat():
         GLOBAL_CACHE["history"][userId][chatId].append({
             "sender": "user", 
             "text": message, 
-            "ts": datetime.now(datetime.UTC).isoformat()
+            "ts": datetime.now(timezone.utc).isoformat()
         })
         DIRTY_FLAGS["history"] = True
         
         # Last seen güncelle
-        GLOBAL_CACHE["last_seen"][userId] = datetime.now(datetime.UTC).isoformat()
+        # DÜZELTME: datetime.UTC hatalı bir referanstı; timezone.utc kullanıyoruz.
+        GLOBAL_CACHE["last_seen"][userId] = datetime.now(timezone.utc).isoformat()
         DIRTY_FLAGS["last_seen"] = True
 
         # 3. Cevap Üret
@@ -349,7 +349,7 @@ async def chat():
         GLOBAL_CACHE["history"][userId][chatId].append({
             "sender": "nova", 
             "text": reply, 
-            "ts": datetime.now(datetime.UTC).isoformat()
+            "ts": datetime.now(timezone.utc).isoformat()
         })
         
         # Cache'e at
