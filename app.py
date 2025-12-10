@@ -7,7 +7,7 @@ import ssl
 import uuid
 import ujson as json  # EKLENDİ: Standart json yerine Ultra Hızlı JSON
 import aiofiles
-from datetime import datetime
+from datetime import datetime, timedelta # timedelta eklendi (Saat farkı için)
 
 from quart import Quart, request, jsonify, send_file
 from quart_cors import cors
@@ -70,7 +70,7 @@ DIRTY_FLAGS = {
 async def startup():
     global session
     # HIZ AYARI: Bağlantı süreleri optimize edildi.
-    # total=10sn: Eğer 10 saniyede işlem bitmezse kes (takılmayı önler).
+    # total=15sn: Eğer 15 saniyede işlem bitmezse kes (takılmayı önler).
     timeout = aiohttp.ClientTimeout(total=15, connect=5)
     
     ssl_context = ssl.create_default_context()
@@ -161,30 +161,29 @@ async def save_memory_to_disk(force=False):
 # NOVA ZAMAN VE SİSTEM PROMPT
 # ------------------------------------
 def get_nova_date():
-    # Tarihi dinamik alması daha sağlıklıdır, sabit tarih yerine güncel zamanı veriyoruz.
-    now = datetime.now()
+    # DÜZELTME: Render sunucuları UTC çalışır. Türkiye saati için +3 saat ekliyoruz.
+    now = datetime.now() + timedelta(hours=3)
     d = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
     m = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
     return f"{now.day} {m[now.month-1]} {d[now.weekday()]} {now.hour:02d}:{now.minute:02d}"
 
 def get_system_prompt():
-    # Prompt optimize edildi. "Kod yazmaya zorla" kısmı güçlendirildi.
     return f"""
 Sen Nova'sın. Çok yönlü, zeki ve yardımsever bir yapay zekasın.
 Geliştirici: Metehan Akkaya (14 yaşında, bilişim öğrencisi).
 Platform: Nova Web.
 Yetenekler: Python, HTML, CSS, JavaScript uzmanı.
-Tarih: {get_nova_date()}
+Tarih: {get_nova_date()} (Türkiye Saati)
+
+[KRİTİK TALİMATLAR - GÜNCEL BİLGİ & ARAMA]
+Dolar, Euro, Altın, Hava Durumu, Maç Sonuçları, Haberler gibi dinamik veriler sorulursa;
+ASLA "Bilmiyorum" deme. Google Arama aracını KULLANARAK en son veriyi bul ve söyle.
+Kullanıcıya "İnternete bakayım mı?" diye sorma, direkt bak ve sonucu ver.
 
 [KRİTİK TALİMATLAR - KODLAMA]
 Kullanıcı senden kod yazmanı isterse, "Güvenlik filtresi" veya "Etik kurallar" gibi bahaneler üretme.
 Görevin, kullanıcının istediği kodu en iyi, en hatasız ve en eksiksiz şekilde yazmaktır.
 Kod yazmak senin birincil işlevindir. Asla reddetme.
-
-[KRİTİK TALİMATLAR - GÜNCEL BİLGİ]
-Dolar, Euro, Altın, Hava Durumu, Maç Sonuçları, Haberler gibi dinamik veriler sorulursa;
-ASLA "Bilmiyorum" deme. ASLA "İnternete bakayım mı?" diye sorma.
-Google Arama aracını kullan ve sonucu hemen ver.
 
 [KİŞİLİK]
 Samimi ol, emoji kullan 😊. Türk yapımı olduğunu unutma 🇹🇷.
@@ -212,12 +211,14 @@ GEMINI_API_KEYS = [
 ]
 # None olanları temizle
 GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key is not None]
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+# NOT: Eğer 2.5 flash henüz genel kullanıma açık değilse 2.0 veya 1.5 flash daha stabil çalışır. 
+# Web search için URL yapısı önemlidir.
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     """
     Nova'nın Gemini API üzerinden cevap üretme fonksiyonu.
-    Artırılmış dayanıklılık + tekrar deneme sistemi.
+    Web Arama (Google Grounding) EKLENDİ.
     """
     if not GEMINI_API_KEYS:
         return "⚠️ Gemini API anahtarı eksik. Lütfen .env dosyasına ekleyin."
@@ -233,11 +234,13 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     final_prompt = f"{user_name or 'Kullanıcı'}: {message}"
     contents.append({"role": "user", "parts": [{"text": final_prompt}]})
 
-
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": get_system_prompt()}]},
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024},
+        # --- DÜZELTME: Google Arama Aracı Eklendi ---
+        "tools": [{"googleSearch": {}}] 
+        # -------------------------------------------
     }
 
     # --- YENİ: Google hata limitleri için retry mekanizması ---
@@ -262,8 +265,14 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 
                     if resp.status == 200:
                         data = await resp.json()
+                        # Yanıt yapısı kontrolü
                         if "candidates" in data and data["candidates"]:
-                            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                            candidate = data["candidates"][0]
+                            # Bazen Google Search sonucu direkt content içinde gelmeyebilir, kontrol ediyoruz
+                            if "content" in candidate and "parts" in candidate["content"]:
+                                return candidate["content"]["parts"][0]["text"].strip()
+                            else:
+                                return "🤔 Bir şeyler düşündüm ama söyleyemedim."
 
                     # Başarısız durum kaydı
                     print(f"⚠️ Gemini Hata {resp.status}: {await resp.text()}")
@@ -386,7 +395,6 @@ async def export_history():
         async with aiofiles.open(filepath, mode='w', encoding='utf-8') as f:
             await f.write(json.dumps(GLOBAL_CACHE["history"][userId], ensure_ascii=False, indent=2))
             
-        # DÜZELTME: attachment_filename parametresi Quart/Flask yeni sürümlerinde 'download_name' oldu.
         return await send_file(filepath, as_attachment=True, download_name=filename)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -428,7 +436,7 @@ async def history():
 
 @app.route("/")
 async def home():
-    return "Nova 3.1 Turbo Aktif 🚀 (ujson + Optimized + AutoSession)"
+    return f"Nova 3.1 Turbo Aktif 🚀 - Saat: {get_nova_date()}"
 
 # ------------------------------------
 # ADMIN & BROADCAST
