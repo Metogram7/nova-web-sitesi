@@ -1,4 +1,4 @@
-# app.py (DÜZELTİLMİŞ - SADECE HATALAR GİDERİLDİ)
+# app.py (DÜZELTİLMİŞ - FIREBASE initialize_firebase() ENTEGRE EDİLDİ)
 import os
 import asyncio
 import aiohttp
@@ -21,8 +21,13 @@ from email import encoders
 import base64
 
 # Google GenAI imports kept as-is (may be unused if API keys missing)
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+except Exception:
+    # Eğer google paketleri yoksa, sadece devam et (opsiyonel)
+    genai = None
+    types = None
 
 # Firebase (opsiyonel)
 try:
@@ -31,6 +36,9 @@ try:
     FIREBASE_AVAILABLE = True
 except ImportError:
     FIREBASE_AVAILABLE = False
+    # credentials değişkeni tanımsızsa hata vermesin
+    credentials = None
+    messaging = None
     print("⚠️ UYARI: Firebase kütüphanesi eksik. Bildirimler çalışmayacak, ancak sohbet devam eder.")
 
 # --- Uygulama Başlatma ---
@@ -65,6 +73,70 @@ DIRTY_FLAGS = {
 }
 
 # ------------------------------------
+# FIREBASE BAŞLATMA (ENV + Tek Satır JSON) - TAM FONKSİYON
+# ------------------------------------
+async def initialize_firebase():
+    """
+    FIREBASE_CREDENTIALS environment variable'ında tek satır JSON veya
+    serviceAccountKey.json dosyası varsa Firebase Admin SDK'yı başlatır.
+    Hataları yakalar ve log basar.
+    """
+    if not FIREBASE_AVAILABLE:
+        print("⚠️ Firebase Admin SDK yüklenmemiş, Firebase atlanıyor.")
+        return
+
+    # Eğer zaten başlatıldıysa tekrar deneme
+    if firebase_admin._apps:
+        print("ℹ️ Firebase zaten başlatılmış, atlanıyor.")
+        return
+
+    try:
+        firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
+
+        cred_dict = None
+        # 1) ENV değişkeninden yükle (tek satır JSON)
+        if firebase_creds_json:
+            try:
+                cred_dict = json.loads(firebase_creds_json)
+            except Exception as e:
+                print(f"❌ FIREBASE_CREDENTIALS JSON parse hatası: {e}")
+                cred_dict = None
+
+        # 2) ENV yoksa veya parse başarısızsa, serviceAccountKey.json dosyasını dene
+        if cred_dict is None:
+            if os.path.exists("serviceAccountKey.json"):
+                try:
+                    # async değil; startup sırasında okunabilir
+                    with open("serviceAccountKey.json", "r", encoding="utf-8") as f:
+                        file_content = f.read()
+                        cred_dict = json.loads(file_content)
+                except Exception as e:
+                    print(f"❌ serviceAccountKey.json okunurken hata: {e}")
+                    cred_dict = None
+
+        if not cred_dict:
+            print("⚠️ Firebase credential bulunamadı (ENV veya serviceAccountKey.json). Firebase atlanıyor.")
+            return
+
+        # Sertifika nesnesini oluştur
+        try:
+            cred = credentials.Certificate(cred_dict)
+        except Exception as e:
+            # Genelde burada "Invalid private key" veya format hatası yakalanır
+            print(f"❌ Sertifika oluşturulurken hata (muhtemel private key/format problemi): {e}")
+            return
+
+        # Firebase'i başlat
+        try:
+            firebase_admin.initialize_app(cred)
+            print("✅ Firebase: Başarıyla başlatıldı (ENV veya serviceAccountKey.json kullanıldı).")
+        except Exception as e:
+            print(f"❌ Firebase initialize sırasında hata: {e}")
+
+    except Exception as e:
+        print(f"🔥 Beklenmeyen Firebase başlatma hatası: {e}")
+
+# ------------------------------------
 # YAŞAM DÖNGÜSÜ
 # ------------------------------------
 @app.before_serving
@@ -80,21 +152,8 @@ async def startup():
     app.add_background_task(keep_alive)
     app.add_background_task(background_save_worker)
 
-    # Firebase init if available
-    if FIREBASE_AVAILABLE and not firebase_admin._apps:
-        try:
-            firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
-            if firebase_creds_json:
-                cred_dict = json.loads(firebase_creds_json)
-                cred = credentials.Certificate(cred_dict)
-                firebase_admin.initialize_app(cred)
-                print("✅ Firebase: Env Var ile bağlandı.")
-            elif os.path.exists("serviceAccountKey.json"):
-                cred = credentials.Certificate("serviceAccountKey.json")
-                firebase_admin.initialize_app(cred)
-                print("✅ Firebase: Dosya ile bağlandı.")
-        except Exception as e:
-            print(f"⚠️ Firebase başlatılamadı (Önemli değil, chat devam eder): {e}")
+    # Firebase init: tek fonksiyondan yap
+    await initialize_firebase()
 
 @app.after_serving
 async def cleanup():
