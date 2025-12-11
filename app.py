@@ -245,80 +245,110 @@ GEMINI_API_KEYS = [
 GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key is not None]
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
+# ============================
+#  ULTRA STABIL GEMINI SISTEMI (Mail Linkli)
+# ============================
+
+from asyncio import Lock
+
+# Tek istek sırası (Queue)
+GEMINI_QUEUE = Lock()
+
+
+def hata_mesaji(text: str):
+    """Her hata çıktısına mail gönderme linki ekler."""
+    mail_link = "<br><a href='mailto:metehanakkaya30@gmail.com?subject=Nova%20Hata%20Bildirimi'>Hata Bildir (Geliştiriciye Mail At)</a>"
+    return text + mail_link
+
+
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
-    """
-    Nova'nın Gemini API üzerinden cevap üretme fonksiyonu.
-    Artırılmış dayanıklılık + tekrar deneme sistemi.
-    """
     if not GEMINI_API_KEYS:
-        return "⚠️ Gemini API anahtarı eksik. Lütfen .env dosyasına ekleyin."
+        return hata_mesaji("⚠️ Gemini API anahtarı eksik.")
 
-    # Son 5 mesaj
-    recent_history = conversation[-5:]
-    contents = []
-    for msg in recent_history:
-        role = "user" if msg["sender"] == "user" else "model"
-        if msg.get("text"):
-            contents.append({"role": role, "parts": [{"text": str(msg['text'])}]})
+    # --- Sadece 1 API isteği aynı anda çalışsın ---
+    async with GEMINI_QUEUE:
 
-    final_prompt = f"{user_name or 'Kullanıcı'}: {message}"
-    contents.append({"role": "user", "parts": [{"text": final_prompt}]})
+        # Son 5 mesajı al
+        recent_history = conversation[-5:]
+        contents = []
 
+        for msg in recent_history:
+            role = "user" if msg["sender"] == "user" else "model"
+            if msg.get("text"):
+                contents.append({"role": role, "parts": [{"text": str(msg['text'])}]})
 
-    payload = {
-        "contents": contents,
-        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024},
-    }
+        final_prompt = f"{user_name or 'Kullanıcı'}: {message}"
+        contents.append({"role": "user", "parts": [{"text": final_prompt}]})
 
-    # --- YENİ: Google hata limitleri için retry mekanizması ---
-    async def call_gemini(api_key):
-        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+        payload = {
+            "contents": contents,
+            "system_instruction": {"parts": [{"text": get_system_prompt()}]},
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024},
+        }
 
-        # 3 kez yeniden deneme
-        for attempt in range(3):
-            try:
-                async with session.post(
-                    GEMINI_API_URL,
-                    headers=headers,
-                    json=payload,
-                    timeout=40  # timeout artırıldı
-                ) as resp:
+        # ----------- Tek API Key çağırma fonksiyonu -----------
+        async def call_gemini(api_key):
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key
+            }
 
-                    # Google overload durumları
-                    if resp.status in (429, 500, 502, 503, 504):
-                        print(f"⚠️ Google yoğunluk: {resp.status}, deneme {attempt+1}/3")
-                        await asyncio.sleep(1.5)  # 1.5 saniye bekle, tekrar dene
-                        continue
+            delay = 1  # Exponential backoff başlangıcı
 
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if "candidates" in data and data["candidates"]:
-                            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            for attempt in range(5):  # 5 kez dene
+                try:
+                    async with session.post(
+                        GEMINI_API_URL,
+                        headers=headers,
+                        json=payload,
+                        timeout=40
+                    ) as resp:
 
-                    # Başarısız durum kaydı
-                    print(f"⚠️ Gemini Hata {resp.status}: {await resp.text()}")
-                    return None
+                        # Google yoğunluk / rate-limit
+                        if resp.status in (429, 500, 502, 503, 504):
+                            print(f"⚠️ Google yoğunluk: {resp.status}, deneme {attempt+1}/5")
 
-            except asyncio.TimeoutError:
-                print(f"⏳ Timeout - tekrar deneme ({attempt+1}/3)")
-                await asyncio.sleep(1.5)
-                continue
-            except Exception as e:
-                print(f"⚠️ Bağlantı hatası: {e}")
-                await asyncio.sleep(1.5)
-                continue
+                            # GOOGLE HATA MESAJI İÇİN:
+                            if attempt == 0:  # ilk hatada kullanıcıya mail linkli mesaj
+                                return hata_mesaji(f"⚠️ Google yoğunluk: {resp.status}. Sunucu geçici olarak meşgul.")
 
-        return None
+                            await asyncio.sleep(delay)
+                            delay = min(delay * 2, 10)
+                            continue
 
+                        # Başarılı yanıt
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if "candidates" in data and data["candidates"]:
+                                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    # --- Tüm API key’leri sırayla dene ---
-    for key in GEMINI_API_KEYS:
-        result = await call_gemini(key)
-        if result:
-            return result
+                        # Bilinmeyen hata
+                        print(f"⚠️ Gemini Hata {resp.status}: {await resp.text()}")
+                        return hata_mesaji("⚠️ Beklenmedik API hatası oluştu.")
 
-    return "⚠️ Şu an sistem çok yoğun veya bağlantı kurulamadı. Lütfen tekrar dene."
+                except asyncio.TimeoutError:
+                    print(f"⏳ Timeout → {delay}s bekleme")
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 10)
+                    continue
+
+                except Exception as e:
+                    print(f"⚠️ Bağlantı hatası: {e}")
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 10)
+                    continue
+
+            # 5 deneme sonunda hala yoksa:
+            return hata_mesaji("⚠️ Sunucu aşırı yoğun, lütfen tekrar dene.")
+
+        # ----------- API Anahtarlarını sırayla dene -----------
+        for key in GEMINI_API_KEYS:
+            result = await call_gemini(key)
+            if result:
+                return result
+
+        return hata_mesaji("⚠️ Sistem aşırı yoğun. Tüm API anahtarları limitte.")
+
 
 # ------------------------------
 # API ROUTE'LARI
