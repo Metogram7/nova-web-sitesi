@@ -637,9 +637,15 @@ async def ws_chat_handler():
     finally:
         pass
 
-# app.py dosyasında yapılacak değişiklikler bitti.
 if __name__ == "__main__":
     print("Nova 3.1 Turbo Başlatılıyor... 🚀")
-    port = int(os.getenv("PORT", 5000))
-    # debug=False performansı artırır
-    asyncio.run(app.run_task(host="0.0.0.0", port=port, debug=False))
+
+    port = int(os.getenv("PORT", "5000"))
+    import hypercorn.asyncio
+    from hypercorn.config import Config
+
+    config = Config()
+    config.bind = [f"0.0.0.0:{port}"]
+
+    asyncio.run(hypercorn.asyncio.serve(app, config))
+    print(f"✅ Nova 3.1 Turbo Çalışıyor 🚀 Port: {port}")
