@@ -252,8 +252,16 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 from asyncio import Lock
 
 # Tek istek sırası (Queue)
-GEMINI_QUEUE = Lock()
+# app.py dosyasının en üstüne (import bölümüne) ekleyin:
+import collections 
+from asyncio import Lock 
 
+# ... (Mevcut importlar ve değişkenler) ...
+
+# ------------------------------
+# GEMINI VE GOOGLE API (Mevcut değişkenleriniz)
+# ------------------------------
+GEMINI_API_KEY_DEQUE = collections.deque(GEMINI_API_KEYS)
 
 def hata_mesaji(text: str):
     """Her hata çıktısına mail gönderme linki ekler."""
@@ -262,93 +270,103 @@ def hata_mesaji(text: str):
 
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
-    if not GEMINI_API_KEYS:
-        return hata_mesaji("⚠️ Gemini API anahtarı eksik.")
+    if not GEMINI_API_KEY_DEQUE:
+        return hata_mesaji("⚠️ Gemini API anahtarı eksik veya hepsi kullanılamıyor.")
 
-    # --- Sadece 1 API isteği aynı anda çalışsın ---
-    async with GEMINI_QUEUE:
+    # --- Ön Hazırlık ---
+    # Son 5 mesajı al
+    recent_history = conversation[-5:]
+    contents = []
 
-        # Son 5 mesajı al
-        recent_history = conversation[-5:]
-        contents = []
+    for msg in recent_history:
+        role = "user" if msg["sender"] == "user" else "model"
+        if msg.get("text"):
+            contents.append({"role": role, "parts": [{"text": str(msg['text'])}]})
 
-        for msg in recent_history:
-            role = "user" if msg["sender"] == "user" else "model"
-            if msg.get("text"):
-                contents.append({"role": role, "parts": [{"text": str(msg['text'])}]})
+    final_prompt = f"{user_name or 'Kullanıcı'}: {message}"
+    contents.append({"role": "user", "parts": [{"text": final_prompt}]})
 
-        final_prompt = f"{user_name or 'Kullanıcı'}: {message}"
-        contents.append({"role": "user", "parts": [{"text": final_prompt}]})
+    payload = {
+        "contents": contents,
+        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024},
+    }
 
-        payload = {
-            "contents": contents,
-            "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024},
+    # ----------- Tek API Key çağırma fonksiyonu -----------
+    async def call_gemini(api_key):
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key
         }
 
-        # ----------- Tek API Key çağırma fonksiyonu -----------
-        async def call_gemini(api_key):
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": api_key
-            }
+        delay = 1  # Exponential backoff başlangıcı
 
-            delay = 1  # Exponential backoff başlangıcı
+        for attempt in range(5):  # 5 kez dene
+            try:
+                async with session.post(
+                    GEMINI_API_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=40
+                ) as resp:
 
-            for attempt in range(5):  # 5 kez dene
-                try:
-                    async with session.post(
-                        GEMINI_API_URL,
-                        headers=headers,
-                        json=payload,
-                        timeout=40
-                    ) as resp:
+                    # Google yoğunluk / rate-limit
+                    if resp.status in (429, 500, 502, 503, 504):
+                        print(f"⚠️ Google yoğunluk: {resp.status}, deneme {attempt+1}/5")
 
-                        # Google yoğunluk / rate-limit
-                        if resp.status in (429, 500, 502, 503, 504):
-                            print(f"⚠️ Google yoğunluk: {resp.status}, deneme {attempt+1}/5")
+                        # GOOGLE HATA MESAJI İÇİN:
+                        if attempt == 0:  # ilk hatada kullanıcıya mail linkli mesaj
+                            return hata_mesaji(f"⚠️ Google yoğunluk: {resp.status}. Sunucu geçici olarak meşgul."), None
 
-                            # GOOGLE HATA MESAJI İÇİN:
-                            if attempt == 0:  # ilk hatada kullanıcıya mail linkli mesaj
-                                return hata_mesaji(f"⚠️ Google yoğunluk: {resp.status}. Sunucu geçici olarak meşgul.")
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 10)
+                        continue
 
-                            await asyncio.sleep(delay)
-                            delay = min(delay * 2, 10)
-                            continue
+                    # Başarılı yanıt
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if "candidates" in data and data["candidates"]:
+                            # Başarılı anahtarı listenin başına geri at
+                            GEMINI_API_KEY_DEQUE.appendleft(api_key)
+                            return data["candidates"][0]["content"]["parts"][0]["text"].strip(), api_key
 
-                        # Başarılı yanıt
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if "candidates" in data and data["candidates"]:
-                                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    # Bilinmeyen hata
+                    print(f"⚠️ Gemini Hata {resp.status}: {await resp.text()}")
+                    return hata_mesaji("⚠️ Beklenmedik API hatası oluştu."), None
 
-                        # Bilinmeyen hata
-                        print(f"⚠️ Gemini Hata {resp.status}: {await resp.text()}")
-                        return hata_mesaji("⚠️ Beklenmedik API hatası oluştu.")
+            except asyncio.TimeoutError:
+                print(f"⏳ Timeout → {delay}s bekleme")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 10)
+                continue
 
-                except asyncio.TimeoutError:
-                    print(f"⏳ Timeout → {delay}s bekleme")
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 2, 10)
-                    continue
+            except Exception as e:
+                print(f"⚠️ Bağlantı hatası: {e}")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 10)
+                continue
 
-                except Exception as e:
-                    print(f"⚠️ Bağlantı hatası: {e}")
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 2, 10)
-                    continue
+        # 5 deneme sonunda hala yoksa:
+        return hata_mesaji("⚠️ Sunucu aşırı yoğun, lütfen tekrar dene."), None
 
-            # 5 deneme sonunda hala yoksa:
-            return hata_mesaji("⚠️ Sunucu aşırı yoğun, lütfen tekrar dene.")
-
-        # ----------- API Anahtarlarını sırayla dene -----------
-        for key in GEMINI_API_KEYS:
-            result = await call_gemini(key)
-            if result:
-                return result
-
-        return hata_mesaji("⚠️ Sistem aşırı yoğun. Tüm API anahtarları limitte.")
-
+    # ----------- API Anahtarlarını sırayla dene (Rotasyon) -----------
+    
+    # Hata durumunda anahtarı listenin sonuna atmak için kopyasını değil, doğrudan deque'yi kullanıyoruz.
+    # Döngü, mevcut anahtar sayımız kadar dönecek.
+    for _ in range(len(GEMINI_API_KEY_DEQUE)):
+        # Geçerli anahtarı al ve deque'den çıkar
+        key = GEMINI_API_KEY_DEQUE.popleft() 
+        
+        result, success_key = await call_gemini(key)
+        
+        if success_key:
+            # Başarılı anahtar call_gemini içinde zaten başa atıldı.
+            return result
+        else:
+            # Başarısız anahtarı listenin sonuna at (kötü anahtarı bir sonraki denemeye bırak)
+            GEMINI_API_KEY_DEQUE.append(key)
+            
+    return hata_mesaji("⚠️ Sistem aşırı yoğun. Tüm API anahtarları limitte/başarısız.")
 
 # ------------------------------
 # API ROUTE'LARI
