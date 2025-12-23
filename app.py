@@ -52,7 +52,7 @@ gemini_client = None
 MAIL_ADRES = "nova.ai.v4.2@gmail.com"
 MAIL_SIFRE = os.getenv("MAIL_SIFRE", "gamtdoiralefaruk")
 ALICI_ADRES = MAIL_ADRES
-MAX_DAILY_QUESTIONS = 12
+MAX_DAILY_QUESTIONS = 10
 
 # Dosya Yolları
 HISTORY_FILE = "chat_history.json"
