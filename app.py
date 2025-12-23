@@ -337,6 +337,7 @@ YENİ GÜNCELİKLER:] (NOVA 2.7ww SÜRÜMÜ)
     "😔 Limit sistemi" (en fazla 10) (bunu eklemek zorundaydık :( )),
     "👨‍🏫 Nova daha çok eğitildi",
     "🐛 hatalar düzeldi ."
+    "🛜 Yeni alan adı: https://novawebb.com (URL)"
       
 KONUŞMA KURALLARI (ZORUNLU):
 - her seferinde "merhaba" deme 
