@@ -131,37 +131,30 @@ ACTIVE_GEMINI_KEY = random.choice(GEMINI_API_KEYS) if GEMINI_API_KEYS else None
 # ------------------------------------
 # LİMİT KONTROL FONKSİYONU
 # ------------------------------------
-def check_daily_limit(user_id):
-    """Kullanıcının günlük soru limitini kontrol eder ve günceller."""
-    now = datetime.now(timezone.utc)
-    
-    # Kullanıcı verisi yoksa yeni oluştur
-    user_limit = GLOBAL_CACHE["daily_limits"].get(user_id, {
-        "count": 0, 
-        "last_reset": now.isoformat()
-    })
-    
-    try:
-        last_reset = datetime.fromisoformat(user_limit["last_reset"])
-    except:
-        last_reset = now
+import asyncio
 
-    # Gün değiştiyse (Tarih bazlı kontrol) sayacı sıfırla
-    if now.date() > last_reset.date():
-        user_limit = {"count": 0, "last_reset": now.isoformat()}
-    
-    # Limit aşımı kontrolü
-    if user_limit["count"] >= MAX_DAILY_QUESTIONS:
+limit_lock = asyncio.Lock()  # Global
+
+async def check_daily_limit(user_id):
+    async with limit_lock:
+        now = datetime.now(timezone.utc)
+        user_limit = GLOBAL_CACHE["daily_limits"].get(user_id, {"count": 0, "last_reset": now.isoformat()})
+        last_reset = datetime.fromisoformat(user_limit.get("last_reset", now.isoformat()))
+        
+        if now.date() > last_reset.date():
+            user_limit = {"count": 0, "last_reset": now.isoformat()}
+        
+        if user_limit["count"] >= MAX_DAILY_QUESTIONS:
+            GLOBAL_CACHE["daily_limits"][user_id] = user_limit
+            DIRTY_FLAGS["daily_limits"] = True
+            return False
+        
+        user_limit["count"] += 1
+        user_limit["last_reset"] = now.isoformat()
         GLOBAL_CACHE["daily_limits"][user_id] = user_limit
         DIRTY_FLAGS["daily_limits"] = True
-        return False
-    
-    # Limit artışı
-    user_limit["count"] += 1
-    user_limit["last_reset"] = now.isoformat()
-    GLOBAL_CACHE["daily_limits"][user_id] = user_limit
-    DIRTY_FLAGS["daily_limits"] = True
-    return True
+        return True
+
 
 # ------------------------------------
 # YAŞAM DÖNGÜSÜ (LifeCycle)
@@ -340,14 +333,10 @@ Gereksiz açıklama, hikâye, uzun anlatım YAPMA.
 Sadece net cevap ver.
 hep ben metehan akkaya tarafından geliştirildim deme , sadece kullanıcı sorarsa ve lafı geçerse.
 
-YENİ GÜNCELİKLER:] (NOVA 2.7w SÜRÜMÜ)
-      🚀 Nova artık daha hızlı ve akıcı!",
-      "👨‍🏫 Nova daha çok eğitildi",
-      "🔴Nova Live modu!. (menüden hemen geçin!)",
-      "🏃‍➡️ Yazma hızı artırıldı.",
-      "🐛 hatalar düzeldi .",
-      "💻 Mağlesef nova play store için ertelendi😔 (ocak ayı 5 inden sonra)",
-      "🚀 Nova limit hatasi bidaha yaşanmayacak."
+YENİ GÜNCELİKLER:] (NOVA 2.7ww SÜRÜMÜ)
+    "😔 Limit sistemi" (en fazla 10) (bunu eklemek zorundaydık :( )),
+    "👨‍🏫 Nova daha çok eğitildi",
+    "🐛 hatalar düzeldi ."
       
 KONUŞMA KURALLARI (ZORUNLU):
 - her seferinde "merhaba" deme 
@@ -361,6 +350,7 @@ KONUŞMA KURALLARI (ZORUNLU):
 - Emoji kullanma.
 - Liste gerekiyorsa en fazla 3 madde.
 - Net, direkt ve teknik konuş.
+
 
 DAVRANIŞ:
 - Kullanıc: Hızlı ve net cevap ister.
@@ -465,8 +455,8 @@ async def chat():
     try:
         data = await request.get_json(force=True)
         
-        userId = data.get("userId")
-        if not userId or userId == "anon": userId = str(uuid.uuid4())
+        if not userId or userId == "anon":
+            userId = "TEST_USER_ID_1234"  # sabit
         
         chatId = data.get("currentChat")
         if not chatId or chatId == "default": chatId = str(uuid.uuid4())
@@ -484,8 +474,9 @@ async def chat():
             GLOBAL_CACHE["history"][userId][chatId] = []
 
         # 1. KULLANICI LİMİT KONTROLÜ
-        if not check_daily_limit(userId):
+        if not await check_daily_limit(userId):
             reply = "Modelimin limiti doldu lütfen yarın tekrar buluşalım 🙂"
+
             
             GLOBAL_CACHE["history"][userId][chatId].append({
                 "sender": "nova",
