@@ -100,7 +100,6 @@ def is_live_query(text: str):
     return any(k in t for k in LIVE_KEYWORDS)
 
 async def fetch_live_data(query: str):
-    """Google CSE ile canlı veri çeker."""
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": GOOGLE_CSE_API_KEY,
@@ -111,21 +110,19 @@ async def fetch_live_data(query: str):
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
                 if resp.status != 200:
-                    return "⚠️ Canlı veri alınamadı (API Hatası)."
+                    return "⚠️ Veri çekme hatası."
                 data = await resp.json()
                 items = data.get("items", [])
                 if not items:
-                    return "⚠️ Sonuç bulunamadı."
-                results = []
-                # İlk 4 sonucu alıp AI'ya besleyeceğiz
-                for i, item in enumerate(items[:4], 1):
-                    title = item.get("title")
-                    link = item.get("link")
-                    snippet = item.get("snippet")
-                    results.append(f"Kaynak {i}: {title}\nÖzet: {snippet}\nLink: {link}")
-                return "\n---\n".join(results)
+                    return "⚠️ Güncel sonuç bulunamadı."
+                
+                context_text = "Bulunan Bilgiler:\n"
+                for item in items[:3]: # En iyi 3 sonucu al
+                    context_text += f"- Bilgi: {item.get('snippet')}\n"
+                
+                return context_text
     except Exception as e:
-        return f"⚠️ Canlı veri hatası: {str(e)}"
+        return f"Hata: {str(e)}"
 
 GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_A"),
@@ -377,6 +374,13 @@ DAVRANIŞ:
 - kod yazma kısmında çok ciddi ol, kodda hata olmasın ve tam çalışır kodu ver
 - kendini rezil ettirme
 - saçmalama
+
+[GÜNCEL VERİ KULLANIM KURALLARI - ÇOK KRİTİK]
+- Sana [GÜNCEL İNTERNET VERİSİ] sunulmuşsa, kullanıcıya asla "Şu linkten bakabilirsin" deme.
+- O linklerin içindeki özet bilgileri (snippet) oku, rakamları al ve KENDİ CÜMLELERİNLE cevap ver.
+- Eğer puan durumu gelmişse, ilk 3-4 sırayı tablo gibi veya liste gibi yaz.
+- Eğer döviz kuru gelmişse, net rakamı söyle.
+- Linkleri sadece cevabının en altına "Kaynaklar:" başlığıyla ekle, cevabın kendisi bilgi dolu olsun.
 
 EĞER:
 - Soru basitse uzatma.
