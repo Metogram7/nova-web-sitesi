@@ -518,13 +518,13 @@ async def chat():
 
         # 4. Cevap Üret (GÜNCELLENMİŞ MANTIK)
         search_context = ""
-        
-        # Eğer soru canlı veri içeriyorsa (Dolar, maç, haber vb.)
+
+# Eğer soru canlı veri içeriyorsa (Dolar, maç, haber vb.)
         if is_live_query(message):
             print(f"🌍 Canlı veri aranıyor: {message}")
             raw_search_result = await fetch_live_data(message)
-            
-            # Eğer hata değilse bağlama ekle
+
+    # Eğer hata değilse bağlama ekle
             if "⚠️" not in raw_search_result:
                 search_context = (
                     f"\n\n--- [GÜNCEL İNTERNET VERİSİ (Google Search)] ---\n"
@@ -533,18 +533,21 @@ async def chat():
                     f"Sistem Notu: Kullanıcının sorusunu yukarıdaki verileri kullanarak yanıtla."
                 )
             else:
-                # Veri çekilemezse bile chat devam etsin
                 print(f"Arama başarısız oldu: {raw_search_result}")
 
-        # Gemini'ye gidecek nihai mesaj (Kullanıcı + Varsa Arama Sonuçları)
+# ✅ Her durumda final_prompt_to_ai oluştur
         final_prompt_to_ai = message + search_context
-        
-        reply = await gemma_cevap_async(
-            final_prompt_to_ai, 
-            GLOBAL_CACHE["history"][userId][chatId], 
-            session, 
-            userInfo.get("name")
+
+# Gemini cevabı async olarak çağır
+        reply_task = asyncio.create_task(
+            gemma_cevap_async(
+                final_prompt_to_ai, 
+                GLOBAL_CACHE["history"][userId][chatId], 
+                session, 
+                userInfo.get("name")
+            )
         )
+        reply = await reply_task
 
         # 5. Cevabı Kaydet
         GLOBAL_CACHE["history"][userId][chatId].append({
