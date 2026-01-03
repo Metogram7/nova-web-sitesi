@@ -450,6 +450,15 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 async def chat():
     try:
         data = await request.get_json(force=True)
+        message = (data.get("message") or "").strip()
+        userInfo = data.get("userInfo", {})
+
+        if not message:
+            return jsonify({"response": "..."}), 400
+
+# ✅ final_prompt_to_ai her zaman tanımlı olsun
+        final_prompt_to_ai = message
+
         
         # Kullanıcı ID kontrolü
         userId = data.get("userId")
@@ -518,13 +527,8 @@ async def chat():
 
         # 4. Cevap Üret (GÜNCELLENMİŞ MANTIK)
         search_context = ""
-
-# Eğer soru canlı veri içeriyorsa (Dolar, maç, haber vb.)
         if is_live_query(message):
-            print(f"🌍 Canlı veri aranıyor: {message}")
             raw_search_result = await fetch_live_data(message)
-
-    # Eğer hata değilse bağlama ekle
             if "⚠️" not in raw_search_result:
                 search_context = (
                     f"\n\n--- [GÜNCEL İNTERNET VERİSİ (Google Search)] ---\n"
@@ -532,11 +536,9 @@ async def chat():
                     f"-------------------------------------\n"
                     f"Sistem Notu: Kullanıcının sorusunu yukarıdaki verileri kullanarak yanıtla."
                 )
-            else:
-                print(f"Arama başarısız oldu: {raw_search_result}")
 
-# ✅ Her durumda final_prompt_to_ai oluştur
-        final_prompt_to_ai = message + search_context
+        final_prompt_to_ai += search_context
+
 
 # Gemini cevabı async olarak çağır
         reply_task = asyncio.create_task(
