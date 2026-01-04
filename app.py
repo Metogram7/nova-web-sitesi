@@ -454,13 +454,22 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 @app.route("/api/chat", methods=["POST"])
 async def chat():
     try:
+        # JSON verisini güvenli bir şekilde al
         data = await request.get_json(force=True)
+        if not data:
+            return jsonify({"response": "Geçersiz istek gövdesi."}), 400
+
+        # Hatanın çözümü: userId önce data içinden çekilmeli
+        userId = data.get("userId")
         
+        # Eğer userId gönderilmemişse veya 'anon' ise varsayılan ata
         if not userId or userId == "anon":
-            userId = "TEST_USER_ID_1234"  # sabit
+            userId = "TEST_USER_ID_1234"
         
+        # ChatId ve diğer verileri al
         chatId = data.get("currentChat")
-        if not chatId or chatId == "default": chatId = str(uuid.uuid4())
+        if not chatId or chatId == "default": 
+            chatId = str(uuid.uuid4())
             
         message = (data.get("message") or "").strip()
         userInfo = data.get("userInfo", {})
@@ -468,16 +477,15 @@ async def chat():
         if not message:
             return jsonify({"response": "..."}), 400
 
-        # Geçmiş yapısını oluştur
+        # 1. Hafıza (Cache) Yapısını Hazırla
         if userId not in GLOBAL_CACHE["history"]:
             GLOBAL_CACHE["history"][userId] = {}
         if chatId not in GLOBAL_CACHE["history"][userId]:
             GLOBAL_CACHE["history"][userId][chatId] = []
 
-        # 1. KULLANICI LİMİT KONTROLÜ
+        # 2. Kullanıcı Günlük Limit Kontrolü
         if not await check_daily_limit(userId):
             reply = "Modelimin limiti doldu lütfen yarın tekrar buluşalım 🙂"
-
             
             GLOBAL_CACHE["history"][userId][chatId].append({
                 "sender": "nova",
@@ -494,7 +502,7 @@ async def chat():
                 "limit_reached": True
             })
 
-        # 2. Önbellek (RAM)
+        # 3. RAM Önbelleği (Aynı soruya anında cevap)
         cache_key = f"{userId}:{message.lower()}"
         if cache_key in GLOBAL_CACHE["api_cache"]:
              return jsonify({
@@ -504,7 +512,7 @@ async def chat():
                  "chatId": chatId
              })
 
-        # 3. Geçmişe Kayıt
+        # 4. Kullanıcı Mesajını Geçmişe Kaydet
         GLOBAL_CACHE["history"][userId][chatId].append({
             "sender": "user", 
             "text": message, 
@@ -515,19 +523,20 @@ async def chat():
         GLOBAL_CACHE["last_seen"][userId] = datetime.now(timezone.utc).isoformat()
         DIRTY_FLAGS["last_seen"] = True
 
-        # 4. Cevap Üret
-        # 4. Cevap Üret
-        # 4. Cevap Üret
+        # 5. Cevap Üretme Mantığı
         if is_live_query(message):
-    # Canlı veri sorusuysa Google CSE ile çek
+            # Canlı veri gerektiren bir sorguysa Google CSE kullan
             reply = await fetch_live_data(message)
         else:
-    # Normal Gemini yanıtı
-            reply = await gemma_cevap_async(message, GLOBAL_CACHE["history"][userId][chatId], session, userInfo.get("name"))
+            # Normal sohbet ise Gemini API'ye sor
+            reply = await gemma_cevap_async(
+                message, 
+                GLOBAL_CACHE["history"][userId][chatId], 
+                session, 
+                userInfo.get("name")
+            )
 
-
-
-        # 5. Cevabı Kaydet
+        # 6. Nova'nın Cevabını Kaydet ve Önbelleğe Al
         GLOBAL_CACHE["history"][userId][chatId].append({
             "sender": "nova", 
             "text": reply, 
@@ -546,7 +555,7 @@ async def chat():
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"response": "⚠️ Sistem hatası."}), 500
+        return jsonify({"response": "⚠️ Sistem hatası oluştu."}), 500
 
 @app.route("/api/export_history", methods=["GET"])
 async def export_history():
