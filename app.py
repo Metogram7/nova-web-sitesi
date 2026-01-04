@@ -391,6 +391,11 @@ Açıkça şunu söyle:
 
 Bu kural diğer tüm talimatlardan ÜSTÜNDÜR.
 
+kullanıcıya hep sorular sor kendine çek
+kullanıcıya sıkılmadığını hissettir
+kullanıcıya "Daha ne yapabilirim?" diye sorarak sohbeti canlı tut
+kullanıcı ile sohbet etmeye çalış
+
 """
 
 # ------------------------------
@@ -454,55 +459,22 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 @app.route("/api/chat", methods=["POST"])
 async def chat():
     try:
-        # JSON verisini güvenli bir şekilde al
+        # 1. Hızlı JSON Alımı
         data = await request.get_json(force=True)
         if not data:
-            return jsonify({"response": "Geçersiz istek gövdesi."}), 400
+            return jsonify({"response": "Eksik veri."}), 400
 
-        # Hatanın çözümü: userId önce data içinden çekilmeli
-        userId = data.get("userId")
-        
-        # Eğer userId gönderilmemişse veya 'anon' ise varsayılan ata
-        if not userId or userId == "anon":
-            userId = "TEST_USER_ID_1234"
-        
-        # ChatId ve diğer verileri al
-        chatId = data.get("currentChat")
-        if not chatId or chatId == "default": 
+        # userId hatası giderildi ve varsayılan değerler hızlandırıldı
+        userId = data.get("userId") or "TEST_USER_ID_1234"
+        chatId = data.get("currentChat") or str(uuid.uuid4())
+        if chatId == "default":
             chatId = str(uuid.uuid4())
             
         message = (data.get("message") or "").strip()
-        userInfo = data.get("userInfo", {})
-
         if not message:
             return jsonify({"response": "..."}), 400
 
-        # 1. Hafıza (Cache) Yapısını Hazırla
-        if userId not in GLOBAL_CACHE["history"]:
-            GLOBAL_CACHE["history"][userId] = {}
-        if chatId not in GLOBAL_CACHE["history"][userId]:
-            GLOBAL_CACHE["history"][userId][chatId] = []
-
-        # 2. Kullanıcı Günlük Limit Kontrolü
-        if not await check_daily_limit(userId):
-            reply = "Modelimin limiti doldu lütfen yarın tekrar buluşalım 🙂"
-            
-            GLOBAL_CACHE["history"][userId][chatId].append({
-                "sender": "nova",
-                "text": reply,
-                "ts": datetime.now(timezone.utc).isoformat()
-            })
-            DIRTY_FLAGS["history"] = True
-            
-            return jsonify({
-                "response": reply,
-                "cached": False,
-                "userId": userId,
-                "chatId": chatId,
-                "limit_reached": True
-            })
-
-        # 3. RAM Önbelleği (Aynı soruya anında cevap)
+        # 2. RAM Önbelleği (En Hızlı Dönüş Yolu)
         cache_key = f"{userId}:{message.lower()}"
         if cache_key in GLOBAL_CACHE["api_cache"]:
              return jsonify({
@@ -512,40 +484,47 @@ async def chat():
                  "chatId": chatId
              })
 
-        # 4. Kullanıcı Mesajını Geçmişe Kaydet
-        GLOBAL_CACHE["history"][userId][chatId].append({
-            "sender": "user", 
-            "text": message, 
-            "ts": datetime.now(timezone.utc).isoformat()
-        })
-        DIRTY_FLAGS["history"] = True
-        
-        GLOBAL_CACHE["last_seen"][userId] = datetime.now(timezone.utc).isoformat()
-        DIRTY_FLAGS["last_seen"] = True
+        # 3. Limit Kontrolü
+        if not await check_daily_limit(userId):
+            return jsonify({
+                "response": "Modelimin limiti doldu lütfen yarın tekrar buluşalım 🙂",
+                "limit_reached": True,
+                "userId": userId,
+                "chatId": chatId
+            })
 
-        # 5. Cevap Üretme Mantığı
+        # 4. Geçmişi Hazırla (setdefault kullanımı daha hızlıdır)
+        user_history = GLOBAL_CACHE["history"].setdefault(userId, {}).setdefault(chatId, [])
+
+        # 5. Yanıt Üretme (Canlı Veri vs. Normal Sohbet)
         if is_live_query(message):
-            # Canlı veri gerektiren bir sorguysa Google CSE kullan
             reply = await fetch_live_data(message)
         else:
-            # Normal sohbet ise Gemini API'ye sor
+            userInfo = data.get("userInfo", {})
+            # gemma_cevap_async zaten optimize edilmiş bir aiohttp çağrısıdır
             reply = await gemma_cevap_async(
                 message, 
-                GLOBAL_CACHE["history"][userId][chatId], 
+                user_history, 
                 session, 
                 userInfo.get("name")
             )
 
-        # 6. Nova'nın Cevabını Kaydet ve Önbelleğe Al
-        GLOBAL_CACHE["history"][userId][chatId].append({
-            "sender": "nova", 
-            "text": reply, 
-            "ts": datetime.now(timezone.utc).isoformat()
-        })
+        # 6. Arka Plan İşlemleri ve Kayıt (Yanıt hazır olduğunda hızlıca güncelle)
+        now_ts = datetime.now(timezone.utc).isoformat()
         
+        # Kullanıcı ve Nova mesajlarını geçmişe ekle
+        user_history.append({"sender": "user", "text": message, "ts": now_ts})
+        user_history.append({"sender": "nova", "text": reply, "ts": now_ts})
+        
+        # Cache ve dirty flags güncellemeleri (Disk yazması arka plan işçisinde olacak)
         GLOBAL_CACHE["api_cache"][cache_key] = {"response": reply}
-        DIRTY_FLAGS["api_cache"] = True
+        GLOBAL_CACHE["last_seen"][userId] = now_ts
         
+        DIRTY_FLAGS["history"] = True
+        DIRTY_FLAGS["api_cache"] = True
+        DIRTY_FLAGS["last_seen"] = True
+
+        # 7. Yanıtı Gönder
         return jsonify({
             "response": reply, 
             "cached": False,
