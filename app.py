@@ -86,8 +86,9 @@ GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 LIVE_KEYWORDS = [
-    "puan durumu", "süper lig", "dolar", "euro",
-    "altın", "hava durumu", "maç", "haber", "borsa"
+    "puan durumu", "süper lig", "dolar", "euro", "altın", "hava durumu", 
+    "maç", "haber", "borsa", "kimdir", "kaç yaşında", "saat kaç", 
+    "bugün", "güncel", "son dakika", "fiyatı"
 ]
 
 def is_live_query(text: str):
@@ -385,9 +386,7 @@ gerektiriyorsa ve sana backend tarafından HAM VERİ verilmediyse:
 
 KESİNLİKLE tahmin etme.
 KESİNLİKLE tablo uydurma.
-Açıkça şunu söyle:
 
-"Bu soru güncel / canlı veri gerektiriyor. Şu anda bu bilgilere erişimim yok."
 
 Bu kural diğer tüm talimatlardan ÜSTÜNDÜR.
 
@@ -498,7 +497,10 @@ async def chat():
 
         # 5. Yanıt Üretme (Canlı Veri vs. Normal Sohbet)
         if is_live_query(message):
-            reply = await fetch_live_data(message)
+            search_results = await fetch_live_data(message)
+    # Mesajı Gemini'ye gönderirken başına Google sonuçlarını ekliyoruz
+            message = f"GÜNCEL BİLGİ KAYNAĞI:\n{search_results}\n\nKULLANICI SORUSU: {message}"
+            reply = await gemma_cevap_async(message, user_history, session, userInfo.get("name"))
         else:
             userInfo = data.get("userInfo", {})
             # gemma_cevap_async zaten optimize edilmiş bir aiohttp çağrısıdır
