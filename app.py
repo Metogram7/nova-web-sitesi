@@ -497,10 +497,7 @@ async def chat():
 
         # 5. Yanıt Üretme (Canlı Veri vs. Normal Sohbet)
         if is_live_query(message):
-            search_results = await fetch_live_data(message)
-    # Mesajı Gemini'ye gönderirken başına Google sonuçlarını ekliyoruz
-            message = f"GÜNCEL BİLGİ KAYNAĞI:\n{search_results}\n\nKULLANICI SORUSU: {message}"
-            reply = await gemma_cevap_async(message, user_history, session, userInfo.get("name"))
+            reply = await fetch_live_data(message)
         else:
             userInfo = data.get("userInfo", {})
             # gemma_cevap_async zaten optimize edilmiş bir aiohttp çağrısıdır
