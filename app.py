@@ -96,29 +96,35 @@ def is_live_query(text: str):
     return any(k in t for k in LIVE_KEYWORDS)
 
 async def fetch_live_data(query: str):
-    """Google CSE ile canlı veri çeker."""
+    """Google CSE ile canlı veri çeker, Nova'nın okuması için temizler."""
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
         "q": query
     }
+    # Her istekte yeni session açmak yerine global session'ı kullanmak daha iyidir ama 
+    # mevcut yapıyı bozmamak için burada geçici session açıyoruz.
     async with aiohttp.ClientSession() as session:
         async with session.get(url, params=params) as resp:
             if resp.status != 200:
-                return "⚠️ Canlı veri alınamadı."
+                return "⚠️ Canlı veri alınamadı (Google API Hatası)."
+            
             data = await resp.json()
             items = data.get("items", [])
+            
             if not items:
-                return "⚠️ Sonuç bulunamadı."
+                return "⚠️ İnternette bununla ilgili güncel sonuç bulunamadı."
+            
+            # Nova'nın okuyacağı temiz metni hazırlıyoruz
             results = []
-            for i, item in enumerate(items[:3], 1):
-                title = item.get("title")
-                link = item.get("link")
-                snippet = item.get("snippet")
-                results.append(f"{i}. {title}\n{snippet}\n{link}")
+            for i, item in enumerate(items[:4], 1): # En alakalı 4 sonucu al
+                title = item.get("title", "")
+                snippet = item.get("snippet", "")
+                # Link vermiyoruz, sadece bilgiyi veriyoruz ki Nova kafası karışıp link atmasın.
+                results.append(f"Kaynak {i}: {title}\nBilgi: {snippet}")
+            
             return "\n\n".join(results)
-
 GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_A"),
     os.getenv("GEMINI_API_KEY_B"),
@@ -352,6 +358,8 @@ KONUŞMA KURALLARI (ZORUNLU):
 - Emoji kullanma.
 - Liste gerekiyorsa en fazla 3 madde.
 - Net, direkt ve teknik konuş.
+- KUllanıcıyı sıkma. ve hızlı cevap ver.
+- kullanıcıya hep sorular sor kendine çek
 
 
 DAVRANIŞ:
@@ -463,7 +471,6 @@ async def chat():
         if not data:
             return jsonify({"response": "Eksik veri."}), 400
 
-        # userId hatası giderildi ve varsayılan değerler hızlandırıldı
         userId = data.get("userId") or "TEST_USER_ID_1234"
         chatId = data.get("currentChat") or str(uuid.uuid4())
         if chatId == "default":
@@ -473,7 +480,7 @@ async def chat():
         if not message:
             return jsonify({"response": "..."}), 400
 
-        # 2. RAM Önbelleği (En Hızlı Dönüş Yolu)
+        # 2. RAM Önbelleği
         cache_key = f"{userId}:{message.lower()}"
         if cache_key in GLOBAL_CACHE["api_cache"]:
              return jsonify({
@@ -492,30 +499,41 @@ async def chat():
                 "chatId": chatId
             })
 
-        # 4. Geçmişi Hazırla (setdefault kullanımı daha hızlıdır)
+        # 4. Geçmişi Hazırla
         user_history = GLOBAL_CACHE["history"].setdefault(userId, {}).setdefault(chatId, [])
 
-        # 5. Yanıt Üretme (Canlı Veri vs. Normal Sohbet)
-        if is_live_query(message):
-            reply = await fetch_live_data(message)
-        else:
-            userInfo = data.get("userInfo", {})
-            # gemma_cevap_async zaten optimize edilmiş bir aiohttp çağrısıdır
-            reply = await gemma_cevap_async(
-                message, 
-                user_history, 
-                session, 
-                userInfo.get("name")
-            )
+        # ---------------------------------------------------------
+        # 5. YANIT ÜRETME (Nova Akıllı Canlı Mod)
+        # ---------------------------------------------------------
+        userInfo = data.get("userInfo", {})
+        user_name = userInfo.get("name")
 
-        # 6. Arka Plan İşlemleri ve Kayıt (Yanıt hazır olduğunda hızlıca güncelle)
+        if is_live_query(message):
+            # A) Önce Google'dan veriyi "metin" olarak alıyoruz
+            google_data = await fetch_live_data(message)
+            
+            # B) Nova'ya bu veriyi verip yorumlamasını istiyoruz
+            prompt_context = (
+                f"Kullanıcı Sorusu: {message}\n\n"
+                f"Güncel İnternet Verileri:\n{google_data}\n\n"
+                f"TALİMAT: Yukarıdaki güncel internet verilerini oku ve kullanıcının sorusuna NET bir cevap ver. "
+                f"Linkleri listeleme. Kullanıcıya sanki bu bilgiyi zaten biliyormuşsun gibi cevap ver. "
+                f"kesin konuş."
+            )
+            
+            # C) Cevabı Gemini üretiyor (Google verisine bakarak)
+            reply = await gemma_cevap_async(prompt_context, user_history, session, user_name)
+        else:
+            # D) Normal sohbet (Veri gerekmiyorsa)
+            reply = await gemma_cevap_async(message, user_history, session, user_name)
+        # ---------------------------------------------------------
+
+        # 6. Arka Plan İşlemleri ve Kayıt
         now_ts = datetime.now(timezone.utc).isoformat()
         
-        # Kullanıcı ve Nova mesajlarını geçmişe ekle
         user_history.append({"sender": "user", "text": message, "ts": now_ts})
         user_history.append({"sender": "nova", "text": reply, "ts": now_ts})
         
-        # Cache ve dirty flags güncellemeleri (Disk yazması arka plan işçisinde olacak)
         GLOBAL_CACHE["api_cache"][cache_key] = {"response": reply}
         GLOBAL_CACHE["last_seen"][userId] = now_ts
         
@@ -534,7 +552,6 @@ async def chat():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"response": "⚠️ Sistem hatası oluştu."}), 500
-
 @app.route("/api/export_history", methods=["GET"])
 async def export_history():
     try:
