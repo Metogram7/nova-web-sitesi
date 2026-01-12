@@ -86,6 +86,7 @@ GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_C"),
     os.getenv("GEMINI_API_KEY") 
 ]
+# Boş olanları temizle
 GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key]
 
 # PYLANCE HATASINI ÇÖZEN SATIR:
@@ -386,7 +387,8 @@ kullanıcı ile sohbet etmeye çalış
 # ------------------------------
 # GEMINI REST API (Gelişmiş Zeka)
 # ------------------------------
-GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+# DÜZELTME 1: gemini-2.0-flash yerine gemini-2.5-flash yapıldı.
+GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     if not GEMINI_API_KEYS:
@@ -415,7 +417,6 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     random.shuffle(shuffled_keys)
 
     for key in shuffled_keys:
-        # Pylance hatasına neden olan kısım DISABLED_KEYS kontrolü:
         if key in DISABLED_KEYS and datetime.now() < DISABLED_KEYS[key]:
             continue
 
@@ -428,6 +429,12 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                     print(f"🚫 Anahtar Limitte (Key: ...{key[-5:]})")
                     DISABLED_KEYS[key] = datetime.now() + timedelta(minutes=1)
                     continue
+                # DÜZELTME 2: Hata bastırma eklendi
+                else:
+                    error_text = await resp.text()
+                    print(f"❌ API Hatası (Status {resp.status}): {error_text}")
+                    continue
+
         except Exception as e:
             print(f"⚠️ Bağlantı Hatası: {str(e)}")
             continue
@@ -514,8 +521,9 @@ async def ws_chat_handler():
                 if "," in audio_b64: _, audio_b64 = audio_b64.split(",", 1)
                 gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(audio_b64), mime_type="audio/webm"))
 
+            # DÜZELTME 3: WebSocket model sürümü de 1.5-flash yapıldı.
             response_stream = await gemini_client.aio.models.generate_content_stream(
-                model='gemini-2.0-flash',
+                model='gemini-2.5-flash',
                 contents=gemini_contents,
                 config=types.GenerateContentConfig(system_instruction=get_system_prompt(), temperature=0.7)
             )
