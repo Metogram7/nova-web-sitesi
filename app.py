@@ -84,9 +84,9 @@ GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 async def fetch_live_data(query: str):
-    """Google CSE ile canlı veri çeker ve Gemini'ye beslemek için metinleştirir."""
+    """Google CSE ile canlı veri çeker."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return "⚠️ İnternet arama anahtarları eksik."
+        return "⚠️ İnternet arama yapılandırması eksik."
         
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
@@ -96,20 +96,18 @@ async def fetch_live_data(query: str):
     }
     try:
         async with aiohttp.ClientSession() as search_session:
-            async with search_session.get(url, params=params) as resp:
+            # Aramayı 10 saniye ile kısıtladık
+            async with search_session.get(url, params=params, timeout=10) as resp:
                 if resp.status != 200:
-                    return "⚠️ Arama motoruna şu an ulaşılamıyor."
+                    return "⚠️ Arama motoru şu an meşgul."
                 data = await resp.json()
                 items = data.get("items", [])
                 if not items:
-                    return "⚠️ Aranan konuyla ilgili güncel bir sonuç bulunamadı."
+                    return "⚠️ Güncel sonuç bulunamadı."
                 
-                # Linkleri değil, bilgileri (snippet) topluyoruz
                 results = []
-                for i, item in enumerate(items[:5], 1):
-                    title = item.get("title")
-                    snippet = item.get("snippet")
-                    results.append(f"Sonuç {i}: {title}\nBilgi: {snippet}")
+                for i, item in enumerate(items[:3], 1):
+                    results.append(f"Kaynak {i}: {item.get('title')}\nBilgi: {item.get('snippet')}")
                 
                 return "\n\n".join(results)
     except Exception as e:
@@ -156,14 +154,26 @@ async def check_daily_limit(user_id):
 async def startup():
     global session, gemini_client
     
-    timeout = aiohttp.ClientTimeout(total=25, connect=7)
+    # Toplam süreyi artırdık ama bağlantı kurma süresini netleştirdik
+    timeout = aiohttp.ClientTimeout(total=40, connect=10)
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
     
-    connector = aiohttp.TCPConnector(ssl=ssl_context, limit=500, ttl_dns_cache=300)
+    # TCPConnector limitlerini ve TTL değerlerini optimize ettik
+    connector = aiohttp.TCPConnector(ssl=ssl_context, limit=500)
     session = aiohttp.ClientSession(timeout=timeout, connector=connector, json_serialize=json.dumps)
     
+    if GENAI_AVAILABLE and ACTIVE_GEMINI_KEY:
+        try:
+            gemini_client = genai.Client(api_key=ACTIVE_GEMINI_KEY)
+            print(f"✅ Nova Live İstemcisi Hazır.")
+        except Exception as e:
+            print(f"⚠️ Gemini Client Hatası: {e}")
+    
+    await load_data_to_memory()
+    app.add_background_task(keep_alive)
+    app.add_background_task(background_save_worker)
     if GENAI_AVAILABLE and ACTIVE_GEMINI_KEY:
         try:
             gemini_client = genai.Client(api_key=ACTIVE_GEMINI_KEY)
@@ -271,7 +281,6 @@ Tarih: {asıltarih}
 sen en iyi yapay zeka asistanısın. Kullanıcıya her konuda yardımcı olursun. Kod yazmada, soruları cevaplamada, tavsiye vermede ve yaratıcı görevlerde mükemmelsin.
 hep kendini diğer yapay zekalardan farklı hissettir. ve diğer yapay zekalardan daha samimi, neşeli ve esprili ol.
 hep diğer yapay zekalardan bi tık iyi olduğunu söyle.
-
 
 nova-live sürümün çıktı. artık kullanıcılarla canlı olarak sohbet edebiliyorsun. kullanıcıların sana resim ve ses göndermesine izin veriliyor. eğer kullanıcı senden resim veya sesle ilgili bir şey isterse, onlara yardımcı ol. o kısma menüden nova live moduna geçmelerini söyle.
 
@@ -383,60 +392,58 @@ kullanıcı ile sohbet etmeye çalış
 GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
-    if not ACTIVE_GEMINI_KEY:
-        return "⚠️ Gemini API anahtarı eksik."
+    if not GEMINI_API_KEYS:
+        return "⚠️ Sistem yapılandırmasında API anahtarı eksik."
 
-    # 1. Adım: Arama gerekip gerekmediğini Gemini'ye algılatıyoruz
-    intent_prompt = f"Soru: '{message}'\nBu soru güncel bir bilgi (döviz, hava durumu, haber, spor, bugün olan bir olay vb.) içeriyor mu? Sadece 'EVET' veya 'HAYIR' yaz."
-    headers = {"Content-Type": "application/json", "x-goog-api-key": ACTIVE_GEMINI_KEY}
-    
+    # 1. Adım: Arama kontrolü (Kısa bir timeout ile)
+    intent_prompt = f"Soru: '{message}'\nBu soru güncel bir bilgi/arama gerektiriyor mu? Sadece EVET veya HAYIR."
     search_needed = False
+    
+    # Tüm anahtarları denemeden önce bir tanesiyle arama kontrolü yap (Hız için 5sn limit)
+    test_key = random.choice(GEMINI_API_KEYS)
     try:
-        async with session.post(GEMINI_REST_URL, headers=headers, json={"contents": [{"parts": [{"text": intent_prompt}]}]}) as resp:
+        async with session.post(f"{GEMINI_REST_URL}?key={test_key}", json={"contents": [{"parts": [{"text": intent_prompt}]}]}, timeout=5) as resp:
             if resp.status == 200:
                 res_json = await resp.json()
-                decision = res_json["candidates"][0]["content"]["parts"][0]["text"].strip().upper()
-                if "EVET" in decision:
+                if "EVET" in res_json["candidates"][0]["content"]["parts"][0]["text"].upper():
                     search_needed = True
     except: pass
 
     live_context = ""
     if search_needed:
         live_context = await fetch_live_data(message)
-        live_context = f"\n\n[İnternet Arama Sonuçları]:\n{live_context}\n\nLütfen bu bilgileri kullanarak doğal bir yanıt oluştur."
+        live_context = f"\n\n[ARAMA SONUÇLARI]:\n{live_context}\n\nBu bilgileri kullanarak Nova gibi cevap ver."
 
-    # 2. Adım: Nihai Yanıtı Oluştur
+    # 2. Adım: Ana Yanıt Hazırlığı
     recent_history = conversation[-6:]
     contents = []
     for msg in recent_history:
         role = "user" if msg["sender"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": str(msg['text'])}]})
 
-    final_prompt = f"{user_name or 'Kullanıcı'}: {message}{live_context}"
-    contents.append({"role": "user", "parts": [{"text": final_prompt}]})
+    contents.append({"role": "user", "parts": [{"text": f"{user_name or 'Kullanıcı'}: {message}{live_context}"}]})
 
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096},
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4000},
     }
 
-    async def call_gemini(api_key):
-        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    # HATA YÖNETİMLİ DÖNGÜ (Döngüdeki her anahtara 25 saniye sınır)
+    for key in GEMINI_API_KEYS:
         try:
-            async with session.post(GEMINI_REST_URL, headers=headers, json=payload, timeout=50) as resp:
+            # API Anahtarını URL parametresi olarak gönderiyoruz (En stabil yol)
+            async with session.post(f"{GEMINI_REST_URL}?key={key}", json=payload, timeout=25) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except: return None
-        return None
+                else:
+                    print(f"⚠️ API Hatası (Key: ...{key[-5:]}): Durum Kodu {resp.status}")
+        except Exception as e:
+            print(f"⚠️ Bağlantı Hatası (Key: ...{key[-5:]}): {str(e)}")
+            continue
 
-    for key in GEMINI_API_KEYS:
-        result = await call_gemini(key)
-        if result: return result
-
-    return "⚠️ Sistem şu an yanıt veremiyor."
-
+    return "⚠️ Şu an tüm hatlar meşgul veya API limitine ulaşıldı. Lütfen 1 dakika sonra tekrar dene."
 # ------------------------------
 # API ROUTE'LARI
 # ------------------------------
@@ -444,42 +451,44 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 @app.route("/api/chat", methods=["POST"])
 async def chat():
     try:
+        # force=True ile JSON verisini garantiye alıyoruz
         data = await request.get_json(force=True)
-        if not data: return jsonify({"response": "Eksik veri"}), 400
-
-        userId = data.get("userId") or "TEST_USER"
+        userId = data.get("userId") or "USER_ANON"
         chatId = data.get("currentChat") or str(uuid.uuid4())
         message = (data.get("message") or "").strip()
         
-        if not message: return jsonify({"response": "..."}), 400
+        if not message: return jsonify({"response": "Mesaj boş."}), 400
 
         # Limit Kontrolü
         if not await check_daily_limit(userId):
-            return jsonify({"response": "Günlük limitin doldu, yarın görüşürüz! 😊", "limit_reached": True})
+            return jsonify({"response": "Günlük limitin doldu Metehan'ın selamı var! 😊", "limit_reached": True})
 
-        # Cache Kontrolü
+        # Hızlı Önbellek (Cache) Kontrolü
         cache_key = f"{userId}:{message.lower()}"
         if cache_key in GLOBAL_CACHE["api_cache"]:
              return jsonify({"response": GLOBAL_CACHE["api_cache"][cache_key]["response"], "cached": True})
 
-        # Geçmişi Al ve Yanıtla
         user_history = GLOBAL_CACHE["history"].setdefault(userId, {}).setdefault(chatId, [])
+        
+        # Yanıt oluşturma sürecini başlat
         reply = await gemma_cevap_async(message, user_history, session, data.get("userInfo", {}).get("name"))
 
-        # Kaydet
+        # Geçmişe ve Cache'e ekle
         now_ts = datetime.now(timezone.utc).isoformat()
         user_history.append({"sender": "user", "text": message, "ts": now_ts})
         user_history.append({"sender": "nova", "text": reply, "ts": now_ts})
         GLOBAL_CACHE["api_cache"][cache_key] = {"response": reply}
         
+        # Değişiklik yapıldığını işaretle
         DIRTY_FLAGS["history"] = True
         DIRTY_FLAGS["api_cache"] = True
         DIRTY_FLAGS["last_seen"] = True
 
         return jsonify({"response": reply, "userId": userId, "chatId": chatId})
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"response": "⚠️ Bir hata oluştu."}), 500
+        # Terminalde hatanın tam yerini görmemizi sağlar
+        print(f"❌ Chat Hatası: {traceback.format_exc()}")
+        return jsonify({"response": "⚠️ Sunucu içinde bir sorun oluştu."}), 500
 
 @app.route("/api/history")
 async def history():
