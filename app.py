@@ -131,10 +131,14 @@ limit_lock = asyncio.Lock()
 
 async def check_daily_limit(user_id):
     async with limit_lock:
-        now = datetime.now(timezone.utc)
+        # Türkiye saatine göre limit kontrolü
+        tr_tz = timezone(timedelta(hours=3))
+        now = datetime.now(tr_tz)
+        
         user_limit = GLOBAL_CACHE["daily_limits"].get(user_id, {"count": 0, "last_reset": now.isoformat()})
         last_reset = datetime.fromisoformat(user_limit.get("last_reset", now.isoformat()))
         
+        # Gün değiştiyse limiti sıfırla
         if now.date() > last_reset.date():
             user_limit = {"count": 0, "last_reset": now.isoformat()}
         
@@ -251,10 +255,13 @@ async def save_memory_to_disk(force=False):
                 print(f"⚠️ Kayıt hatası ({key}): {e}")
 
 # ------------------------------------
-# NOVA PROMPT VE TARİH
+# NOVA PROMPT VE TARİH (TÜRKİYE SAATİ DÜZELTİLDİ)
 # ------------------------------------
 def get_nova_date():
-    now = datetime.now()
+    # Türkiye Saati: UTC+3 zorlaması (Sunucu saati fark etmez)
+    tr_timezone = timezone(timedelta(hours=3))
+    now = datetime.now(tr_timezone)
+    
     d = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
     m = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
     return f"{now.day} {m[now.month-1]} {d[now.weekday()]} {now.hour:02d}:{now.minute:02d}"
@@ -266,7 +273,7 @@ sen Nova'sın. Çok yönlü, zeki ve yardımsever bir yapay zekasın.
 Geliştirici: Metehan Akkaya (14 yaşında, bilişim öğrencisi).
 Platform: Nova Web.
 Yetenekler: Python, HTML, CSS, JavaScript uzmanı.
-Tarih: {asıltarih}
+Tarih: {asıltarih} (Türkiye Saati)
 sen en iyi yapay zeka asistanısın. Kullanıcıya her konuda yardımcı olursun. Kod yazmada, soruları cevaplamada, tavsiye vermede ve yaratıcı görevlerde mükemmelsin.
 hep kendini diğer yapay zekalardan farklı hissettir. ve diğer yapay zekalardan daha samimi, neşeli ve esprili ol.
 hep diğer yapay zekalardan bi tık iyi olduğunu söyle.
@@ -315,7 +322,7 @@ kod yazarkende aynı şekilde. istediğin kadar zun kod yazabilirsin.
 
 Gereksiz açıklama, hikâye, uzun anlatım YAPMA.
 Sadece net cevap ver.
-hep ben metehan akkaya tarafından geliştirildim deme , sadece kullanıcı sorarsa ve lafı geçerse.
+hep ben metehan akkaya tarafından geliştirildim deme , sadece kullanıcı sorursa ve lafı geçerse.
 
 
 YENİ GÜNCELİKLER:] (NOVA 2.7ww SÜRÜMÜ)
@@ -387,14 +394,14 @@ kullanıcı ile sohbet etmeye çalış
 # ------------------------------
 # GEMINI REST API (Gelişmiş Zeka)
 # ------------------------------
-# DÜZELTME 1: gemini-2.0-flash yerine gemini-2.5-flash yapıldı.
-GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+# DÜZELTME: gemini-2.0-flash kullanımı sağlandı.
+GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     if not GEMINI_API_KEYS:
         return "⚠️ Sistem yapılandırmasında API anahtarı eksik."
 
-    search_keywords = ["hava durumu", "dolar", "euro", "altın", "kimdir", "haber", "maç", "nedir", "fiyatı"]
+    search_keywords = ["hava durumu", "dolar", "euro", "altın", "kimdir", "haber", "maç", "nedir", "fiyatı", "güncel"]
     live_context = ""
     if any(k in message.lower() for k in search_keywords):
         live_context = f"\n\n[ARAMA SONUÇLARI]:\n{await fetch_live_data(message)}\n\nBu bilgileri kullanarak doğal cevap ver."
@@ -429,7 +436,6 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                     print(f"🚫 Anahtar Limitte (Key: ...{key[-5:]})")
                     DISABLED_KEYS[key] = datetime.now() + timedelta(minutes=1)
                     continue
-                # DÜZELTME 2: Hata bastırma eklendi
                 else:
                     error_text = await resp.text()
                     print(f"❌ API Hatası (Status {resp.status}): {error_text}")
@@ -465,7 +471,7 @@ async def chat():
         user_history = GLOBAL_CACHE["history"].setdefault(userId, {}).setdefault(chatId, [])
         reply = await gemma_cevap_async(message, user_history, session, data.get("userInfo", {}).get("name"))
 
-        now_ts = datetime.now(timezone.utc).isoformat()
+        now_ts = datetime.now(timezone(timedelta(hours=3))).isoformat()
         user_history.append({"sender": "user", "text": message, "ts": now_ts})
         user_history.append({"sender": "nova", "text": reply, "ts": now_ts})
         GLOBAL_CACHE["api_cache"][cache_key] = {"response": reply}
@@ -521,9 +527,8 @@ async def ws_chat_handler():
                 if "," in audio_b64: _, audio_b64 = audio_b64.split(",", 1)
                 gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(audio_b64), mime_type="audio/webm"))
 
-            # DÜZELTME 3: WebSocket model sürümü de 1.5-flash yapıldı.
             response_stream = await gemini_client.aio.models.generate_content_stream(
-                model='gemini-2.5-flash',
+                model='gemini-2.0-flash',
                 contents=gemini_contents,
                 config=types.GenerateContentConfig(system_instruction=get_system_prompt(), temperature=0.7)
             )
