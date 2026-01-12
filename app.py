@@ -154,51 +154,37 @@ async def check_daily_limit(user_id):
 async def startup():
     global session, gemini_client
     
-    # Toplam süreyi artırdık ama bağlantı kurma süresini netleştirdik
     timeout = aiohttp.ClientTimeout(total=40, connect=10)
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
     
-    # TCPConnector limitlerini ve TTL değerlerini optimize ettik
     connector = aiohttp.TCPConnector(ssl=ssl_context, limit=500)
     session = aiohttp.ClientSession(timeout=timeout, connector=connector, json_serialize=json.dumps)
     
-    if GENAI_AVAILABLE and ACTIVE_GEMINI_KEY:
+    # Live mod için (WebSocket) anahtar seçimi
+    if GENAI_AVAILABLE and GEMINI_API_KEYS:
         try:
-            gemini_client = genai.Client(api_key=ACTIVE_GEMINI_KEY)
-            print(f"✅ Nova Live İstemcisi Hazır.")
+            active_key = random.choice(GEMINI_API_KEYS)
+            gemini_client = genai.Client(api_key=active_key)
+            print(f"✅ Nova Live Modu Hazır (Key: ...{active_key[-5:]})")
         except Exception as e:
-            print(f"⚠️ Gemini Client Hatası: {e}")
-    
-    await load_data_to_memory()
-    app.add_background_task(keep_alive)
-    app.add_background_task(background_save_worker)
-    if GENAI_AVAILABLE and ACTIVE_GEMINI_KEY:
-        try:
-            gemini_client = genai.Client(api_key=ACTIVE_GEMINI_KEY)
-            print(f"✅ Gemini İstemcisi Başlatıldı (Key: ...{ACTIVE_GEMINI_KEY[-5:]})")
-        except Exception as e:
-            print(f"⚠️ Gemini Client Başlatma Hatası: {e}")
+            print(f"⚠️ Gemini Live Başlatılamadı: {e}")
     
     await load_data_to_memory()
     app.add_background_task(keep_alive)
     app.add_background_task(background_save_worker)
     
+    # Firebase Başlatma
     if FIREBASE_AVAILABLE and not firebase_admin._apps:
         try:
             firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
             if firebase_creds_json:
-                cred_dict = json.loads(firebase_creds_json)
-                cred = credentials.Certificate(cred_dict)
+                cred = credentials.Certificate(json.loads(firebase_creds_json))
                 firebase_admin.initialize_app(cred)
-                print("✅ Firebase: Env Var ile bağlandı.")
-            elif os.path.exists("serviceAccountKey.json"):
-                cred = credentials.Certificate("serviceAccountKey.json")
-                firebase_admin.initialize_app(cred)
-                print("✅ Firebase: Dosya ile bağlandı.")
+                print("✅ Firebase: Bağlandı.")
         except Exception as e:
-            print(f"⚠️ Firebase başlatılamadı: {e}")
+            print(f"⚠️ Firebase hatası: {e}")
 
 @app.after_serving
 async def cleanup():
@@ -395,26 +381,13 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     if not GEMINI_API_KEYS:
         return "⚠️ Sistem yapılandırmasında API anahtarı eksik."
 
-    # 1. Adım: Arama kontrolü (Kısa bir timeout ile)
-    intent_prompt = f"Soru: '{message}'\nBu soru güncel bir bilgi/arama gerektiriyor mu? Sadece EVET veya HAYIR."
-    search_needed = False
-    
-    # Tüm anahtarları denemeden önce bir tanesiyle arama kontrolü yap (Hız için 5sn limit)
-    test_key = random.choice(GEMINI_API_KEYS)
-    try:
-        async with session.post(f"{GEMINI_REST_URL}?key={test_key}", json={"contents": [{"parts": [{"text": intent_prompt}]}]}, timeout=5) as resp:
-            if resp.status == 200:
-                res_json = await resp.json()
-                if "EVET" in res_json["candidates"][0]["content"]["parts"][0]["text"].upper():
-                    search_needed = True
-    except: pass
-
+    # Arama gerektiren anahtar kelimeler (API Kotası harcamadan kontrol)
+    search_keywords = ["hava durumu", "dolar", "euro", "altın", "kimdir", "haber", "maç", "nedir", "fiyatı", "canlı", "güncel"]
     live_context = ""
-    if search_needed:
-        live_context = await fetch_live_data(message)
-        live_context = f"\n\n[ARAMA SONUÇLARI]:\n{live_context}\n\nBu bilgileri kullanarak Nova gibi cevap ver."
+    if any(k in message.lower() for k in search_keywords):
+        live_context = f"\n\n[ARAMA SONUÇLARI]:\n{await fetch_live_data(message)}\n\nBu bilgileri kullanarak doğal cevap ver."
 
-    # 2. Adım: Ana Yanıt Hazırlığı
+    # Geçmişi hazırla
     recent_history = conversation[-6:]
     contents = []
     for msg in recent_history:
@@ -429,21 +402,32 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4000},
     }
 
-    # HATA YÖNETİMLİ DÖNGÜ (Döngüdeki her anahtara 25 saniye sınır)
-    for key in GEMINI_API_KEYS:
+    # API Anahtarlarını rastgele karıştır ve dene
+    shuffled_keys = list(GEMINI_API_KEYS)
+    random.shuffle(shuffled_keys)
+
+    for key in shuffled_keys:
+        # Eğer bu anahtar 1 dakika içinde 429 hatası aldıysa atla
+        if key in DISABLED_KEYS and datetime.now() < DISABLED_KEYS[key]:
+            continue
+
         try:
-            # API Anahtarını URL parametresi olarak gönderiyoruz (En stabil yol)
             async with session.post(f"{GEMINI_REST_URL}?key={key}", json=payload, timeout=25) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                elif resp.status == 429:
+                    # ANA DEĞİŞİKLİK: Limit hatası veren anahtarı kara listeye al
+                    print(f"🚫 Anahtar Limitte (Key: ...{key[-5:]})")
+                    DISABLED_KEYS[key] = datetime.now() + timedelta(minutes=1)
+                    continue
                 else:
-                    print(f"⚠️ API Hatası (Key: ...{key[-5:]}): Durum Kodu {resp.status}")
+                    print(f"⚠️ API Hatası {resp.status} (Key: ...{key[-5:]})")
         except Exception as e:
-            print(f"⚠️ Bağlantı Hatası (Key: ...{key[-5:]}): {str(e)}")
+            print(f"⚠️ Bağlantı Hatası: {str(e)}")
             continue
 
-    return "⚠️ Şu an tüm hatlar meşgul veya API limitine ulaşıldı. Lütfen 1 dakika sonra tekrar dene."
+    return "⚠️ Şu an tüm Nova hatları meşgul. Lütfen 1 dakika sonra tekrar dene."
 # ------------------------------
 # API ROUTE'LARI
 # ------------------------------
