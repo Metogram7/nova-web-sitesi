@@ -89,7 +89,7 @@ GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_C"),
     os.getenv("GEMINI_API_KEY") 
 ]
-# None veya boş olanları temizle ve rastgele bir tane seç (Load Balancing)
+# None veya boş olanları temizle
 GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key]
 ACTIVE_GEMINI_KEY = random.choice(GEMINI_API_KEYS) if GEMINI_API_KEYS else None
 GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
@@ -127,7 +127,7 @@ async def analyze_search_intent(message: str, session: aiohttp.ClientSession):
     payload = {
         "contents": [{"role": "user", "parts": [{"text": message}]}],
         "system_instruction": {"parts": [{"text": system_instruction}]},
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 15}, # Çok düşük sıcaklık ve token limiti ile hızlan
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 15},
     }
 
     # Rastgele bir key seç
@@ -140,7 +140,6 @@ async def analyze_search_intent(message: str, session: aiohttp.ClientSession):
                 data = await resp.json()
                 if "candidates" in data and data["candidates"]:
                     result = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    # Eğer AI saçmalarsa veya boş dönerse NO kabul et
                     if not result: return "NO"
                     return result
             return "NO"
@@ -525,7 +524,6 @@ async def chat():
             return jsonify({"response": "..."}), 400
 
         # 2. Önbellek Kontrolü (Cache)
-        # Sadece basit sorguları cache'den ver, niyet analizi yapmadan önce basit bir kontrol yapılabilir
         cache_key = f"{userId}:{message.lower()}"
         
         # 3. Limit Kontrolü
@@ -541,15 +539,12 @@ async def chat():
         user_history = GLOBAL_CACHE["history"].setdefault(userId, {}).setdefault(chatId, [])
 
         # 5. AKILLI NİYET ANALİZİ ve YANIT ÜRETME
-        # Önce yapay zekaya "Bu mesaj internet gerektiriyor mu?" diye sor.
         search_intent = await analyze_search_intent(message, session)
         
         search_results = None
-        # Eğer yapay zeka bir sorgu önerdiyse (ör: "dolar kuru") ve NO demediyse, aramayı yap.
         if search_intent != "NO":
             search_results = await fetch_live_data(search_intent)
         else:
-            # İnternet gerekmiyorsa cache kontrolü yapabiliriz
             if cache_key in GLOBAL_CACHE["api_cache"]:
                 return jsonify({
                     "response": GLOBAL_CACHE["api_cache"][cache_key]["response"], 
@@ -565,7 +560,7 @@ async def chat():
             user_history, 
             session, 
             userInfo.get("name"),
-            search_context=search_results # Arama varsa buraya dolar, yoksa None gider
+            search_context=search_results
         )
 
         # 6. Kayıt ve Cache
@@ -574,7 +569,6 @@ async def chat():
         user_history.append({"sender": "user", "text": message, "ts": now_ts})
         user_history.append({"sender": "nova", "text": reply, "ts": now_ts})
         
-        # Eğer internet sorgusu değilse cache'e at
         if search_intent == "NO":
             GLOBAL_CACHE["api_cache"][cache_key] = {"response": reply}
             DIRTY_FLAGS["api_cache"] = True
