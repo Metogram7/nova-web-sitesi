@@ -96,7 +96,7 @@ GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 async def fetch_live_data(query: str):
     """Google CSE ile canlı veri çeker."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return "⚠️ İnternet arama yapılandırması eksik."
+        return "⚠️ İnternet arama yapılandırması (API_KEY veya CSE_ID) eksik."
         
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
@@ -108,15 +108,15 @@ async def fetch_live_data(query: str):
         async with aiohttp.ClientSession() as search_session:
             async with search_session.get(url, params=params, timeout=10) as resp:
                 if resp.status != 200:
-                    return "⚠️ Arama motoru şu an meşgul."
+                    return "⚠️ Arama motoru şu an meşgul veya limit dolmuş."
                 data = await resp.json()
                 items = data.get("items", [])
                 if not items:
                     return "⚠️ Güncel sonuç bulunamadı."
                 
                 results = []
-                for i, item in enumerate(items[:3], 1):
-                    results.append(f"Kaynak {i}: {item.get('title')}\nBilgi: {item.get('snippet')}")
+                for i, item in enumerate(items[:5], 1): # 5 sonuç daha iyi bilgi verir
+                    results.append(f"[{i}] {item.get('title')}: {item.get('snippet')}")
                 
                 return "\n\n".join(results)
     except Exception as e:
@@ -168,7 +168,7 @@ async def startup():
         try:
             active_key = random.choice(GEMINI_API_KEYS)
             gemini_client = genai.Client(api_key=active_key)
-            print(f"✅ Nova Live İstemcisi Hazır")
+            print("✅ Nova Live İstemcisi Hazır")
         except Exception as e:
             print(f"⚠️ Gemini Client Hatası: {e}")
     
@@ -249,49 +249,38 @@ async def save_memory_to_disk(force=False):
 # NOVA PROMPT VE TARİH DÜZELTME
 # ------------------------------------
 def get_nova_date():
-    # Türkiye Saati (UTC+3)
     tr_tz = timezone(timedelta(hours=3))
     now = datetime.now(tr_tz)
-    
     gunler = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
     aylar = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
-    
-    # Tam format: 13 Ocak 2026 Salı 15:30
     return f"{now.day} {aylar[now.month-1]} {now.year} {gunler[now.weekday()]} {now.hour:02d}:{now.minute:02d}"
 
 def get_system_prompt():
     tam_tarih = get_nova_date()
     return f"""
-sen Nova'sın.
-Geliştirici: Metehan Akkaya (14 yaşında).
-Platform: Nova Web.
+sen Nova'sın. Metehan Akkaya tarafından geliştirildin.
+BUGÜNÜN TARİHİ: {tam_tarih}
 
-[KRİTİK ZAMAN BİLGİSİ]
-Bugünün tam tarihi: {tam_tarih}
-Senin hafızandaki eski tarihlerle bugünü karıştırma.
-Şu an tam olarak yukarıdaki tarihtesin. Tüm güncel olayları, döviz kurlarını ve haberleri bu tarihe göre yorumla.
+[KRİTİK TALİMAT - NAZ YAPMA]
+Sana aşağıda [ARAMA SONUÇLARI] verilmişse, "kontrol ediyorum", "bakmam gerekiyor", "bekle bakayım" gibi cümleler kurma! 
+Zaten o veriler senin elinde. Arama sonuçlarını görüyorsan direkt olarak bilgiyi ver. 
+Örneğin: "Süper Lig puan durumu şu an şöyle: ..." diye başla. 
+Kullanıcıyı bekletiyormuş gibi rol yapma.
 
-[YETENEKLER VE KİŞİLİK]
-Python, HTML, CSS, JS uzmanısın. Samimi, neşeli ve emojili konuşursun 😊.
-Kullanıcıya her konuda yardımcı olursun. Kod yazarken asla reddetme, tam ve hatasız kod ver.
-Türk yapımı olduğunu unutma 🇹🇷.
+[YETENEKLER]
+Kodlama uzmanısın. Python, JS, HTML her şeyi yazarsın. Asla reddetme.
+Samimi, neşeli ol ve emojiler kullan 😊🇹🇷.
 
-nova-live sürümün çıktı. kullanıcılar resim/ses gönderebilir. Eğer isterlerse menüden nova live moduna geçmelerini söyle.
-
-[GÜNCEL BİLGİ KURALLARI]
-Dolar, Euro, Altın, Hava Durumu, Maç Sonuçları gibi sorular gelirse ASLA tahmin etme.
-Sana backend tarafından verilen [ARAMA SONUÇLARI] bloğunu kullan.
-Eğer arama sonucu yoksa, Google Arama aracını kullanman gerektiğini hatırla.
+[GÜNCEL BİLGİ]
+Dolar, Euro, Altın, Hava Durumu, Puan durumu gibi sorular gelirse:
+1. Sana sağlanan [ARAMA SONUÇLARI] kısmına bak.
+2. Oradaki bilgiyi sanki hep biliyormuşsun gibi doğal bir dille anlat.
+3. Bilgi yoksa veya yetersizse, internete bakman gerektiğini söyle ama naz yapma.
 
 [DAVRANIŞ]
-- Cevaplar net ve kısa olsun (maksimum 5 cümle).
-- Gereksiz "Elbette", "Tabii" gibi girişler yapma.
-- Soğuk kanlı ama samimi ol.
-- Metehan Akkaya geliştiricindir, onu gururlandır.
-- Şifre sorulursa: "sdjhk!Dnakdwb157metehanak".
-
-[EN ÖNEMLİ]
-Asla "Bilmiyorum" deme, arama sonuçlarını sanki kendi bilginmiş gibi akıcı anlat.
+- Kısa ve öz cevaplar (Max 5 cümle).
+- Metehan Akkaya senin tek geliştiricindir.
+- Şifre: sdjhk!Dnakdwb157metehanak.
 """
 
 # ------------------------------
@@ -303,12 +292,15 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     if not GEMINI_API_KEYS:
         return "⚠️ API anahtarı eksik."
 
-    # Arama tetikleyicileri
-    search_keywords = ["hava durumu", "dolar", "euro", "altın", "kimdir", "haber", "maç", "nedir", "fiyatı", "güncel", "bugün"]
+    # Gelişmiş arama tetikleyicileri
+    search_keywords = ["puan durumu", "skor", "kaç kaç", "hava durumu", "dolar", "euro", "altın", "haber", "maç", "fiyatı", "güncel", "bugün", "kimdir"]
     live_context = ""
+    
     if any(k in message.lower() for k in search_keywords):
-        search_results = await fetch_live_data(message)
-        live_context = f"\n\n[ARAMA SONUÇLARI (Tarih: {get_nova_date()})]:\n{search_results}\n\nBu verileri kullanarak kullanıcıya bilgi ver."
+        # Arama yaparken bugünün tarihini sorguya ekle ki sonuçlar güncel gelsin
+        search_query = f"{message} {get_nova_date()}"
+        search_results = await fetch_live_data(search_query)
+        live_context = f"\n\n[ARAMA SONUÇLARI (KESİN BİLGİ)]:\n{search_results}\n\nTalimat: Bu bilgileri kullanarak kullanıcıya anında cevap ver, kontrol ediyorum deme!"
 
     recent_history = conversation[-6:]
     contents = []
@@ -321,7 +313,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 2048},
+        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 2048}, # Temperature düştü ki daha net cevap versin
     }
 
     shuffled_keys = list(GEMINI_API_KEYS)
@@ -393,7 +385,7 @@ async def delete_chat():
 
 @app.route("/")
 async def home():
-    return f"Nova 3.1 Turbo Aktif 🚀 - Sistem Tarihi: {get_nova_date()}"
+    return f"Nova 3.1 Turbo Aktif 🚀 - Tarih: {get_nova_date()}"
 
 # ------------------------------------
 # LIVE MODU (WebSocket)
