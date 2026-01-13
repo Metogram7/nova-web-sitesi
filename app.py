@@ -394,8 +394,8 @@ kullanıcı ile sohbet etmeye çalış
 # ------------------------------
 # GEMINI REST API (Gelişmiş Zeka)
 # ------------------------------
-# DÜZELTME: gemini-2.0-flash kullanımı sağlandı.
-GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+# DÜZELTME: gemini-2.5-flash kullanımı sağlandı.
+GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     if not GEMINI_API_KEYS:
@@ -528,7 +528,7 @@ async def ws_chat_handler():
                 gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(audio_b64), mime_type="audio/webm"))
 
             response_stream = await gemini_client.aio.models.generate_content_stream(
-                model='gemini-2.0-flash',
+                model='gemini-2.5-flash',
                 contents=gemini_contents,
                 config=types.GenerateContentConfig(system_instruction=get_system_prompt(), temperature=0.7)
             )
