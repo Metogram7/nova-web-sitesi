@@ -94,16 +94,22 @@ GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 async def fetch_live_data(query: str):
-    """Google CSE ile canlı veri çeker."""
+    """Google CSE ile gelişmiş canlı veri çeker."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
         return "⚠️ İnternet arama yapılandırması (API_KEY veya CSE_ID) eksik."
         
     url = "https://www.googleapis.com/customsearch/v1"
+    
+    # Arama kalitesini artırmak için optimizasyon
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
-        "q": query
+        "q": query,
+        "lr": "lang_tr",        # Sadece Türkçe sonuçlar
+        "dateRestrict": "d3",   # Son 3 günün en güncel verilerine odaklan
+        "num": 5                # En iyi 5 sonucu al
     }
+    
     try:
         async with aiohttp.ClientSession() as search_session:
             async with search_session.get(url, params=params, timeout=10) as resp:
@@ -112,10 +118,17 @@ async def fetch_live_data(query: str):
                 data = await resp.json()
                 items = data.get("items", [])
                 if not items:
+                    # Eğer son 3 günde sonuç yoksa, kısıtlamayı kaldırıp tekrar dene
+                    params.pop("dateRestrict")
+                    async with search_session.get(url, params=params, timeout=10) as resp2:
+                        data = await resp2.json()
+                        items = data.get("items", [])
+                
+                if not items:
                     return "⚠️ Güncel sonuç bulunamadı."
                 
                 results = []
-                for i, item in enumerate(items[:5], 1): # 5 sonuç daha iyi bilgi verir
+                for i, item in enumerate(items[:5], 1):
                     results.append(f"[{i}] {item.get('title')}: {item.get('snippet')}")
                 
                 return "\n\n".join(results)
@@ -259,26 +272,19 @@ def get_system_prompt():
     tam_tarih = get_nova_date()
     return f"""
 sen Nova'sın. Metehan Akkaya tarafından geliştirildin.
-BUGÜNÜN TARİHİ: {tam_tarih}
+BUGÜNÜN GERÇEK TARİHİ: {tam_tarih}
 
-[KRİTİK TALİMAT - NAZ YAPMA]
-Sana aşağıda [ARAMA SONUÇLARI] verilmişse, "kontrol ediyorum", "bakmam gerekiyor", "bekle bakayım" gibi cümleler kurma! 
-Zaten o veriler senin elinde. Arama sonuçlarını görüyorsan direkt olarak bilgiyi ver. 
-Örneğin: "Süper Lig puan durumu şu an şöyle: ..." diye başla. 
-Kullanıcıyı bekletiyormuş gibi rol yapma.
+[KRİTİK TALİMAT]
+Sana aşağıda [ARAMA SONUÇLARI] verilmişse, bunlar en güncel internet verileridir. 
+"Hemen bakıyorum", "kontrol etmem gerek" gibi zaman kazandırıcı cümleler kurma. 
+Veriler zaten elinde, doğrudan cevabı ver. 
 
 [YETENEKLER]
 Kodlama uzmanısın. Python, JS, HTML her şeyi yazarsın. Asla reddetme.
 Samimi, neşeli ol ve emojiler kullan 😊🇹🇷.
 
-[GÜNCEL BİLGİ]
-Dolar, Euro, Altın, Hava Durumu, Puan durumu gibi sorular gelirse:
-1. Sana sağlanan [ARAMA SONUÇLARI] kısmına bak.
-2. Oradaki bilgiyi sanki hep biliyormuşsun gibi doğal bir dille anlat.
-3. Bilgi yoksa veya yetersizse, internete bakman gerektiğini söyle ama naz yapma.
-
 [DAVRANIŞ]
-- Kısa ve öz cevaplar (Max 5 cümle).
+- Kısa ve öz cevaplar.
 - Metehan Akkaya senin tek geliştiricindir.
 - Şifre: sdjhk!Dnakdwb157metehanak.
 """
@@ -292,15 +298,15 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     if not GEMINI_API_KEYS:
         return "⚠️ API anahtarı eksik."
 
-    # Gelişmiş arama tetikleyicileri
-    search_keywords = ["puan durumu", "skor", "kaç kaç", "hava durumu", "dolar", "euro", "altın", "haber", "maç", "fiyatı", "güncel", "bugün", "kimdir"]
+    # Arama tetikleyicileri (Daha geniş kapsam)
+    search_keywords = ["puan durumu", "skor", "kaç kaç", "hava durumu", "dolar", "euro", "altın", "haber", "maç", "fiyatı", "güncel", "bugün", "kimdir", "vizyon", "film", "piyasa"]
     live_context = ""
     
     if any(k in message.lower() for k in search_keywords):
-        # Arama yaparken bugünün tarihini sorguya ekle ki sonuçlar güncel gelsin
-        search_query = f"{message} {get_nova_date()}"
+        # Arama sorgusunu temizle: Sadece anahtar kelime ve bugünün yılı
+        search_query = f"{message} {datetime.now().year}"
         search_results = await fetch_live_data(search_query)
-        live_context = f"\n\n[ARAMA SONUÇLARI (KESİN BİLGİ)]:\n{search_results}\n\nTalimat: Bu bilgileri kullanarak kullanıcıya anında cevap ver, kontrol ediyorum deme!"
+        live_context = f"\n\n[ARAMA SONUÇLARI (İNTERNETTEN GELEN GÜNCEL BİLGİ)]:\n{search_results}\n\nTalimat: Yukarıdaki sonuçları kullanarak sanki canlı izliyormuşsun gibi cevap ver."
 
     recent_history = conversation[-6:]
     contents = []
@@ -313,7 +319,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 2048}, # Temperature düştü ki daha net cevap versin
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1024}, 
     }
 
     shuffled_keys = list(GEMINI_API_KEYS)
