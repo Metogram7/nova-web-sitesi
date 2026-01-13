@@ -96,33 +96,31 @@ GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 async def fetch_live_data(query: str):
     """Google CSE ile canlı veri çeker."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return "⚠️ İnternet arama yapılandırması eksik."
+        return "⚠️ İnternet arama yapılandırması (API_KEY veya CSE_ID) eksik."
         
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
-        "q": query,
-        "lr": "lang_tr", # Türkçe sonuçlara öncelik ver
-        "num": 5
+        "q": query
     }
     try:
         async with aiohttp.ClientSession() as search_session:
-            async with search_session.get(url, params=params, timeout=12) as resp:
+            async with search_session.get(url, params=params, timeout=10) as resp:
                 if resp.status != 200:
-                    return "⚠️ Şu an güncel verilere ulaşılamıyor."
+                    return "⚠️ Arama motoru şu an meşgul veya limit dolmuş."
                 data = await resp.json()
                 items = data.get("items", [])
                 if not items:
-                    return "⚠️ Bu konuda henüz taze bir haber düşmemiş."
+                    return "⚠️ Güncel sonuç bulunamadı."
                 
                 results = []
-                for i, item in enumerate(items, 1):
-                    results.append(f"Veri {i}: {item.get('title')}\nDetay: {item.get('snippet')}")
+                for i, item in enumerate(items[:5], 1): # 5 sonuç daha iyi bilgi verir
+                    results.append(f"[{i}] {item.get('title')}: {item.get('snippet')}")
                 
                 return "\n\n".join(results)
     except Exception as e:
-        return f"⚠️ Bağlantı hatası: {str(e)}"
+        return f"⚠️ Arama hatası: {str(e)}"
 
 # ------------------------------------
 # LİMİT KONTROL FONKSİYONU
@@ -170,9 +168,9 @@ async def startup():
         try:
             active_key = random.choice(GEMINI_API_KEYS)
             gemini_client = genai.Client(api_key=active_key)
-            print("✅ Nova 3.1 Turbo Sistemi Başlatıldı")
+            print("✅ Nova Live İstemcisi Hazır")
         except Exception as e:
-            print(f"⚠️ İstemci Hatası: {e}")
+            print(f"⚠️ Gemini Client Hatası: {e}")
     
     await load_data_to_memory()
     app.add_background_task(keep_alive)
@@ -185,8 +183,9 @@ async def startup():
                 cred_dict = json.loads(firebase_creds_json)
                 cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
+                print("✅ Firebase: Bağlandı.")
         except Exception as e:
-            print(f"⚠️ Firebase Hatası: {e}")
+            print(f"⚠️ Firebase başlatılamadı: {e}")
 
 @app.after_serving
 async def cleanup():
@@ -220,7 +219,7 @@ async def load_data_to_memory():
                 empty = [] if key == "tokens" else {}
                 GLOBAL_CACHE[key] = empty
     except Exception as e:
-        print(f"⚠️ Dosya yükleme hatası: {e}")
+        print(f"⚠️ Veri yükleme hatası: {e}")
 
 async def background_save_worker():
     while True:
@@ -244,7 +243,7 @@ async def save_memory_to_disk(force=False):
                 os.replace(temp_file, filename)
                 DIRTY_FLAGS[key] = False
             except Exception as e:
-                print(f"⚠️ Kayıt hatası: {e}")
+                print(f"⚠️ Kayıt hatası ({key}): {e}")
 
 # ------------------------------------
 # NOVA PROMPT VE TARİH DÜZELTME
@@ -260,48 +259,48 @@ def get_system_prompt():
     tam_tarih = get_nova_date()
     return f"""
 sen Nova'sın. Metehan Akkaya tarafından geliştirildin.
-BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
+BUGÜNÜN TARİHİ: {tam_tarih}
 
-[KRİTİK TALİMAT - KESİNLİK VE ARİF OLMAK]
-Sana [ARAMA SONUÇLARI] bloğu verilmişse, asla "kesin bilgi yok" veya "internet bakmam gerekiyor" gibi bahaneler üretme! 
-Sana gelen snippet'lar (parçalar) içinde cevap gizlidir. O parçaları birleştir, akıl yürüt ve kullanıcıya cevabı ver. 
-Eğer bir tahmin veya maç detayı varsa, "Güncel bilgilere göre durum şöyle görünüyor..." diyerek eldeki veriyi aktar. 
-Kullanıcıya "internete bakmam lazım" demek yasaktır, çünkü zaten bakıldı ve sonuçlar sana iletildi!
+[KRİTİK TALİMAT - NAZ YAPMA]
+Sana aşağıda [ARAMA SONUÇLARI] verilmişse, "kontrol ediyorum", "bakmam gerekiyor", "bekle bakayım" gibi cümleler kurma! 
+Zaten o veriler senin elinde. Arama sonuçlarını görüyorsan direkt olarak bilgiyi ver. 
+Örneğin: "Süper Lig puan durumu şu an şöyle: ..." diye başla. 
+Kullanıcıyı bekletiyormuş gibi rol yapma.
 
-[KİŞİLİK]
-Samimi, neşeli, zeki ve emojili konuş 😊. Türk yapımı olduğunu hissettir 🇹🇷.
-Kod yazarken en iyi algoritmayı kullan ve asla reddetme.
+[YETENEKLER]
+Kodlama uzmanısın. Python, JS, HTML her şeyi yazarsın. Asla reddetme.
+Samimi, neşeli ol ve emojiler kullan 😊🇹🇷.
 
-[GÜNCEL VERİ KULLANIMI]
-Dolar, Hava Durumu, Puan Durumu, Maç sonuçları sorulduğunda:
-1. Alttaki [ARAMA SONUÇLARI] bloğunu oku.
-2. Oradaki bilgiyi "kendi bilginmiş gibi" akıcı ve net bir şekilde anlat.
-3. Asla "arama sonuçlarında bilgi bulamadım" deme, eldeki en yakın veriyi yorumla.
+[GÜNCEL BİLGİ]
+Dolar, Euro, Altın, Hava Durumu, Puan durumu gibi sorular gelirse:
+1. Sana sağlanan [ARAMA SONUÇLARI] kısmına bak.
+2. Oradaki bilgiyi sanki hep biliyormuşsun gibi doğal bir dille anlat.
+3. Bilgi yoksa veya yetersizse, internete bakman gerektiğini söyle ama naz yapma.
 
 [DAVRANIŞ]
-- Kısa, öz ve etkili konuş (Max 5 cümle).
-- Metehan Akkaya geliştiricindir.
+- Kısa ve öz cevaplar (Max 5 cümle).
+- Metehan Akkaya senin tek geliştiricindir.
 - Şifre: sdjhk!Dnakdwb157metehanak.
 """
 
 # ------------------------------
-# GEMINI REST API (Gelişmiş Zeka)
+# GEMINI REST API
 # ------------------------------
 GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     if not GEMINI_API_KEYS:
-        return "⚠️ API sistemi şu an yapılandırılmamış."
+        return "⚠️ API anahtarı eksik."
 
-    # Kapsamlı arama tetikleyicileri
-    search_keywords = ["kim kazandı", "şampiyon", "puan durumu", "maç sonucu", "hava durumu", "dolar", "euro", "altın", "haber", "fiyatı", "güncel", "bugün", "kimdir"]
+    # Gelişmiş arama tetikleyicileri
+    search_keywords = ["puan durumu", "skor", "kaç kaç", "hava durumu", "dolar", "euro", "altın", "haber", "maç", "fiyatı", "güncel", "bugün", "kimdir"]
     live_context = ""
     
     if any(k in message.lower() for k in search_keywords):
-        # Arama sorgusuna tarihi ekle ki taze veri gelsin
+        # Arama yaparken bugünün tarihini sorguya ekle ki sonuçlar güncel gelsin
         search_query = f"{message} {get_nova_date()}"
         search_results = await fetch_live_data(search_query)
-        live_context = f"\n\n[ARAMA SONUÇLARI (KESİN VE ANLIK VERİ)]:\n{search_results}\n\nTALİMAT: Yukarıdaki verileri kullanarak naz yapmadan direkt cevap ver. Bilgi yoksa bile snippet'lardaki en yakın veriyi yorumla."
+        live_context = f"\n\n[ARAMA SONUÇLARI (KESİN BİLGİ)]:\n{search_results}\n\nTalimat: Bu bilgileri kullanarak kullanıcıya anında cevap ver, kontrol ediyorum deme!"
 
     recent_history = conversation[-6:]
     contents = []
@@ -314,7 +313,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2048}, # Düşük ısı = daha az saçmalama, daha çok veriye sadakat
+        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 2048}, # Temperature düştü ki daha net cevap versin
     }
 
     shuffled_keys = list(GEMINI_API_KEYS)
@@ -323,7 +322,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     for key in shuffled_keys:
         if key in DISABLED_KEYS and datetime.now() < DISABLED_KEYS[key]: continue
         try:
-            async with session.post(f"{GEMINI_REST_URL}?key={key}", json=payload, timeout=28) as resp:
+            async with session.post(f"{GEMINI_REST_URL}?key={key}", json=payload, timeout=25) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -332,7 +331,7 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
                     continue
         except: continue
 
-    return "⚠️ Şu an tüm hatlarım dolu, 10 saniye sonra tekrar dener misin? 😊"
+    return "⚠️ Şu an yoğunluk var, az sonra tekrar dene."
 
 # ------------------------------
 # API ROUTE'LARI
@@ -349,7 +348,7 @@ async def chat():
         if not message: return jsonify({"response": "Mesaj boş."}), 400
 
         if not await check_daily_limit(userId):
-            return jsonify({"response": "Günlük 10 soru limitin doldu! Yarın bekliyorum. 😊", "limit_reached": True})
+            return jsonify({"response": "Günlük limitin doldu! Yarın beklerim. 😊", "limit_reached": True})
 
         cache_key = f"{userId}:{message.lower()}"
         if cache_key in GLOBAL_CACHE["api_cache"]:
@@ -367,8 +366,8 @@ async def chat():
         DIRTY_FLAGS["api_cache"] = True
         return jsonify({"response": reply, "userId": userId, "chatId": chatId})
     except Exception as e:
-        print(f"❌ Hata: {traceback.format_exc()}")
-        return jsonify({"response": "⚠️ Ufak bir sistem hatası oluştu."}), 500
+        print(f"❌ Chat Hatası: {traceback.format_exc()}")
+        return jsonify({"response": "⚠️ Sunucu hatası."}), 500
 
 @app.route("/api/history")
 async def history():
@@ -386,7 +385,7 @@ async def delete_chat():
 
 @app.route("/")
 async def home():
-    return f"Nova 3.1 Turbo Aktif 🚀 | {get_nova_date()}"
+    return f"Nova 3.1 Turbo Aktif 🚀 - Tarih: {get_nova_date()}"
 
 # ------------------------------------
 # LIVE MODU (WebSocket)
@@ -395,7 +394,7 @@ async def home():
 async def ws_chat_handler():
     await websocket.accept()
     if not gemini_client:
-        await websocket.send("Sistem hazır değil.")
+        await websocket.send("HATA: Client aktif değil.")
         return
     try:
         while True:
