@@ -5,8 +5,6 @@ import random
 import traceback
 import ssl
 import uuid
-import ujson as json  # Ultra Hızlı JSON
-import aiofiles
 import base64
 from datetime import datetime, timezone, timedelta
 from quart import Quart, request, jsonify, send_file, websocket
@@ -19,6 +17,14 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+import aiofiles
+
+# --- JSON Kütüphanesi (Hata Korumalı) ---
+try:
+    import ujson as json  # Ultra Hızlı JSON
+except ImportError:
+    import json
+    print("⚠️ UYARI: 'ujson' bulunamadı, standart 'json' kullanılıyor.")
 
 # --- Google GenAI İçe Aktarmaları (Hata Korumalı) ---
 try:
@@ -86,12 +92,16 @@ GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_C"),
     os.getenv("GEMINI_API_KEY") 
 ]
+# Boş anahtarları temizle
 GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key]
 
 DISABLED_KEYS = {} 
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
+
+# Model Adı (Stabil sürüm seçildi)
+GEMINI_MODEL_NAME = "gemini-1.5-flash"
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
@@ -111,6 +121,8 @@ async def fetch_live_data(query: str):
         "num": 5        # İlk 5 sonuç
     }
     try:
+        # Burada yeni session açmak yerine global session kullanılabilir ama
+        # bağımsız olması için with bloğu güvenlidir.
         async with aiohttp.ClientSession() as search_session:
             async with search_session.get(url, params=params, timeout=12) as resp:
                 if resp.status != 200:
@@ -147,13 +159,19 @@ Mesaj: {message}"""
     }
 
     try:
+        # Rastgele anahtar seçimi
         key = random.choice(GEMINI_API_KEYS)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+        # Model adını değişkenden alıyoruz
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={key}"
         async with session.post(url, json=analysis_prompt, timeout=10) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                answer = data["candidates"][0]["content"]["parts"][0]["text"].strip().upper()
-                return "EVET" in answer
+                # Güvenli veri okuma
+                if "candidates" in data and data["candidates"]:
+                    content_parts = data["candidates"][0].get("content", {}).get("parts", [])
+                    if content_parts:
+                        answer = content_parts[0].get("text", "").strip().upper()
+                        return "EVET" in answer
     except:
         pass
     return False
@@ -169,8 +187,13 @@ async def check_daily_limit(user_id):
         now = datetime.now(tr_tz)
         
         user_limit = GLOBAL_CACHE["daily_limits"].get(user_id, {"count": 0, "last_reset": now.isoformat()})
-        last_reset = datetime.fromisoformat(user_limit.get("last_reset", now.isoformat()))
         
+        # Tarih stringini datetime objesine çevir
+        try:
+            last_reset = datetime.fromisoformat(user_limit.get("last_reset", now.isoformat()))
+        except ValueError:
+            last_reset = now
+
         if now.date() > last_reset.date():
             user_limit = {"count": 0, "last_reset": now.isoformat()}
         
@@ -198,6 +221,7 @@ async def startup():
     ssl_context.verify_mode = ssl.CERT_NONE
     
     connector = aiohttp.TCPConnector(ssl=ssl_context, limit=500)
+    # json_serialize parametresini ujson ile uyumlu hale getirdik
     session = aiohttp.ClientSession(timeout=timeout, connector=connector, json_serialize=json.dumps)
     
     if GENAI_AVAILABLE and GEMINI_API_KEYS:
@@ -303,7 +327,8 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 # ------------------------------
 # ANA CEVAP MOTORU (REST)
 # ------------------------------
-GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+# Model endpoint URL'si (Değişkenleştirildi)
+GEMINI_REST_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent"
 
 async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.ClientSession, user_name=None):
     if not GEMINI_API_KEYS:
@@ -321,7 +346,8 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
     contents = []
     for msg in recent_history:
         role = "user" if msg["sender"] == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": str(msg['text'])}]})
+        # Mesaj içeriğini string'e çevir
+        contents.append({"role": role, "parts": [{"text": str(msg.get('text', ''))}]})
 
     contents.append({"role": "user", "parts": [{"text": f"{user_name or 'Kullanıcı'}: {message}{live_context}"}]})
 
@@ -340,10 +366,24 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
             async with session.post(f"{GEMINI_REST_URL}?key={key}", json=payload, timeout=25) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    # Güvenli erişim
+                    if "candidates" in data and data["candidates"]:
+                        parts = data["candidates"][0]["content"]["parts"]
+                        if parts:
+                            return parts[0]["text"].strip()
+                        else:
+                            return "⚠️ Model boş yanıt döndü."
+                    else:
+                        return "⚠️ Model yanıt üretemedi."
+                        
                 elif resp.status == 429:
                     DISABLED_KEYS[key] = datetime.now() + timedelta(minutes=1)
-        except: continue
+                else:
+                    error_text = await resp.text()
+                    print(f"API Hata ({resp.status}): {error_text}")
+        except Exception as e: 
+            print(f"Request Hatası: {e}")
+            continue
 
     return "⚠️ Şu an yoğunluk var, lütfen biraz bekleyip tekrar dene."
 
@@ -407,36 +447,58 @@ async def home():
 @app.websocket("/ws/chat")
 async def ws_chat_handler():
     await websocket.accept()
-    if not gemini_client:
-        await websocket.send("HATA: Client aktif değil.")
+    
+    # GenAI veya Client yoksa kapat
+    if not GENAI_AVAILABLE or not gemini_client:
+        await websocket.send("HATA: AI Motoru (Client/Library) aktif değil.")
         return
+
     try:
         while True:
             data = await websocket.receive()
-            msg_data = json.loads(data)
+            try:
+                msg_data = json.loads(data)
+            except:
+                continue # JSON hatalıysa döngüye devam
+
             user_msg = msg_data.get("message", "")
             img_b64 = msg_data.get("image_data")
             audio_b64 = msg_data.get("audio_data")
 
             gemini_contents = []
             if user_msg: gemini_contents.append(user_msg)
-            if img_b64:
-                if "," in img_b64: _, img_b64 = img_b64.split(",", 1)
-                gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(img_b64), mime_type="image/jpeg"))
-            if audio_b64:
-                if "," in audio_b64: _, audio_b64 = audio_b64.split(",", 1)
-                gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(audio_b64), mime_type="audio/webm"))
+            
+            # types.Part kullanımı için try-except ekledik
+            try:
+                if img_b64:
+                    if "," in img_b64: _, img_b64 = img_b64.split(",", 1)
+                    gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(img_b64), mime_type="image/jpeg"))
+                if audio_b64:
+                    if "," in audio_b64: _, audio_b64 = audio_b64.split(",", 1)
+                    gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(audio_b64), mime_type="audio/webm"))
+            except Exception as e:
+                await websocket.send(f"Medya işleme hatası: {str(e)}")
+                continue
 
-            response_stream = await gemini_client.aio.models.generate_content_stream(
-                model='gemini-2.5-flash',
-                contents=gemini_contents,
-                config=types.GenerateContentConfig(system_instruction=get_system_prompt(), temperature=0.7)
-            )
-            async for chunk in response_stream:
-                if chunk.text: await websocket.send(chunk.text)
-            await websocket.send("[END_OF_STREAM]")
-    except:
-        pass
+            if not gemini_contents:
+                continue
+
+            try:
+                response_stream = await gemini_client.aio.models.generate_content_stream(
+                    model=GEMINI_MODEL_NAME, # Model değişkeni kullanıldı
+                    contents=gemini_contents,
+                    config=types.GenerateContentConfig(system_instruction=get_system_prompt(), temperature=0.7)
+                )
+                async for chunk in response_stream:
+                    if chunk.text: await websocket.send(chunk.text)
+                await websocket.send("[END_OF_STREAM]")
+            except Exception as e:
+                await websocket.send(f"HATA: {str(e)}")
+                
+    except asyncio.CancelledError:
+        pass # Bağlantı koptu
+    except Exception as e:
+        print(f"WS Error: {e}")
 
 async def keep_alive():
     url = "https://nova-chat-d50f.onrender.com" 
@@ -450,6 +512,12 @@ async def keep_alive():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
+    # Windows için Event Loop Politikası
     if os.name == 'nt':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(app.run_task(host="0.0.0.0", port=port))
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except:
+            pass
+            
+    # app.run() kullanımı Hypercorn'u doğru şekilde tetikler
+    app.run(host="0.0.0.0", port=port, loop="asyncio")
