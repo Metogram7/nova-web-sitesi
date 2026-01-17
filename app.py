@@ -127,7 +127,7 @@ GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 # Model Adı (Stabil sürüm seçildi)
-GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
+GEMINI_MODEL_NAME = "gemini-2.5-flash-exp"
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
