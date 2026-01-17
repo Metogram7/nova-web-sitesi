@@ -101,7 +101,7 @@ GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 # Model Adı (Stabil sürüm seçildi)
-GEMINI_MODEL_NAME = "gemini-1.5-flash"
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
@@ -110,7 +110,7 @@ GEMINI_MODEL_NAME = "gemini-1.5-flash"
 async def fetch_live_data(query: str):
     """Google CSE ile internetten veri çeker."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return "⚠️ İnternet arama yapılandırması eksik."
+        return "⚠️ İnternet arama yapılandırması eksik. lütfen ulaş: metehanakkaya30@gmail.com"
         
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
@@ -138,7 +138,7 @@ async def fetch_live_data(query: str):
                 
                 return "\n\n".join(results)
     except Exception as e:
-        return f"⚠️ Arama hatası: {str(e)}"
+        return f"⚠️ Arama hatası: {str(e)} lütfen ulaş: metehanakkaya30@gmail.com "
 
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
     """Mesajın internet araması gerektirip gerektirmediğini Gemini'ye sorar."""
