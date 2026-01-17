@@ -519,5 +519,6 @@ if __name__ == "__main__":
         except:
             pass
             
-    # app.run() kullanımı Hypercorn'u doğru şekilde tetikler
-    app.run(host="0.0.0.0", port=port, loop="asyncio")
+    # DÜZELTME: loop="asyncio" string parametresi kaldırıldı.
+    # Render (Linux) ortamında bu parametreye gerek yoktur ve hata verir.
+    app.run(host="0.0.0.0", port=port)
