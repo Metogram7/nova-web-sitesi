@@ -45,28 +45,37 @@ except ImportError:
 # Değişkeni global alanda tanımlıyoruz ki Pylance hata vermesin.
 FIREBASE_AVAILABLE = False
 
+# --- Firebase Başlatma Bölümü (BURAYI GÜNCELLE) ---
 try:
-    # 1. Önce Environment Variable kontrolü (Render gibi sunucular için)
-    firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
-    # 2. Yoksa yerel dosya kontrolü
-    SERVICE_ACCOUNT_PATH = "firebase-key.json"
-    
-    if firebase_creds_json:
-        cred_dict = json.loads(firebase_creds_json)
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
-        FIREBASE_AVAILABLE = True
-        print("✅ Firebase Admin SDK (Env Var) başarıyla başlatıldı.")
-    elif os.path.exists(SERVICE_ACCOUNT_PATH):
-        cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-        firebase_admin.initialize_app(cred)
-        FIREBASE_AVAILABLE = True
-        print("✅ Firebase Admin SDK (Dosya) başarıyla başlatıldı.")
-    else:
-        print(f"⚠️ UYARI: Firebase anahtarı ({SERVICE_ACCOUNT_PATH} veya ENV) bulunamadı.")
-except Exception as e:
-    print(f"❌ Firebase Başlatma Hatası: {e}")
+    import firebase_admin
+    from firebase_admin import credentials, messaging
 
+    # Senin paylaştığın JSON verisi
+    firebase_info = {
+      "type": "service_account",
+      "project_id": "nova-329c7",
+      "private_key_id": "f83900b88319dd1bbb26e0625320c3cf66a62db5",
+      "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCnKfrI/gigiree\n/D9oErzlu6YUC7iSp22tx60Gkp2kjQzDAxyb6yTmUx6l/lNvK2qDIPa0VKmzNnH0\nnjzrNFnJ274b7i2dikV9EK6wy+a67RIpLt+hW4FQvo9AKPE7xJYZjJ8m0qy1RLrd\nf7xhns72QKThrZ5taeQolGPTCREx77URmFDCWgtAm0+CtQ3scF23HuT/y1SIEOF3\nkLWsHWXiP+iu6SLjZZhqA7pZmyH4zqtzFe4pFFRKI/3Wv6yqmFR/SVzGosiAbJhg\na9g02lP9bB3yonm1VGu/yRwtHsR0tRLJpNxtH/kcxp1djBEfcCRtH423HPJ40XA+\nw9IG9zU9AgMBAAECggEAItpnmb8PjOuHP+x/iuM3Q931UWIlPFyQy2YhvwhUOoIX\nKlTMgvzKz4P+lKT7f+cJOOhnT6+ER2OfbF2OvYqHewUoNNoa5Ck3dk1DYwTMaWZy\n/ieyBEpYIr3sj7fJnkjNc+vEJhvQWyYGoRaYMDFknObbCdvBd7YXlldkHdTa4zJt\nWAuuixDEtNi9TyOTSX9uXDpdg9tc5B1/sPFNYwUFQdmnjcvZNSgE/3iW46n/zuW8\npRYFsjqVLc2tSZvZBgzyFkAQhQZV6yZvkxBYJb68w6c5m3i6YG3fGLyV3z2QRkAv\nTK58kbADn3g+wggEE2TZSvZjv5dyZiMuuB/rVYYeCQKBgQDWgo5WxIVqFYgyDXzo\nJNvFdDxs5BN6u79DA/YULGA7BYcqVeQazjgxfw/r2QaMWOFqyn9nxmGfeo001e3T\nIpWrg4vVCjxwtmKAlcRbG4oEeQTwJcbzgiMZSVNlPTJdX8n4p8v7dyHdEDpI9G2C\n1aCCFuNAV+eOOkRrPT8FgFEvdQKBgQDHfxceE0Hyr9YzLcG6xe6vTWeiFajgeQ7K\nQoS1muDbbZnphNG8KeTfBgNyxVcLjeJUSp6OljbSnG+MMrHKqFfKGTjE0KtJ8vDR\n4vbnB5oWxVfwEb/QM0qCyHNCHkU5oR0AeiPVNykrvpzqUrUHX9viIhVNJIupbmJw\nAoq5gtA9qQKBgDi0EkRFdq7wOixg/F+xPpcXftGaCLws3QYuCeKTSGzRrUU3pzCe\nyqPq3p6No/l9lTjRhpQ8EJpDnwgUdOWXAtFv2IrcRdXVoHw1Gs6qnPVJuFBy7AB6\nqiSJCY59es7L/2vHj1hNyZnSLFYUps4rAl7hBfmAQymJpYRjkEE4Bj3xAoGAQB6R\nB5GY+K+bYQer5KQJez6duHLNvJgsMMYAcX4+F0i611thLeEpNqVwJktXFtebjwwM\nujd9l2PAVodUrZY94S8KF/gZlcMHs+4G/WpsFDWJdhe8VuSlZjOXGAEyrrsh3y1i\npvz7tpulQ4shtCUTPzNFNW4xlVttOCMZA1cQJ0ECgYBE3hpUvP5sMa0iQLXsTpA7\nw0gkoEiGHBH7AhJS3jM8cSu4Daif2X9AFnUn4fThThCnw6no3yN8YK9V0R/ga5OL\nQYGsHqo9jJZHJ67Cbw2gI8EE1ZcmWofFb3h9i72VYWpTfug/stYn4eQnBqw+EElc\nfVZ1ZQ9VI9/4g7ZX0S6y2A==\n-----END PRIVATE KEY-----\n",
+      "client_email": "firebase-adminsdk-fbsvc@nova-329c7.iam.gserviceaccount.com",
+      "client_id": "102674841933489195098",
+      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+      "token_uri": "https://oauth2.googleapis.com/token",
+      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+      "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40nova-329c7.iam.gserviceaccount.com",
+      "universe_domain": "googleapis.com"
+    }
+
+    # Hatalı karakter temizliği (Bu satır çok önemli!)
+    firebase_info["private_key"] = firebase_info["private_key"].replace('\\n', '\n')
+
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(firebase_info)
+        firebase_admin.initialize_app(cred)
+    FIREBASE_AVAILABLE = True
+    print("✅ Firebase başarıyla başlatıldı.")
+except Exception as e:
+    FIREBASE_AVAILABLE = False
+    print(f"❌ Firebase Başlatma Hatası: {e}")
 app = Quart(__name__)
 app = cors(app, allow_origin=[
     "https://novawebb.com", 
@@ -127,7 +136,7 @@ GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 # Model Adı (Stabil sürüm seçildi)
-GEMINI_MODEL_NAME = "gemini-2.5-flash-exp"
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
