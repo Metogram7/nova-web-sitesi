@@ -19,6 +19,10 @@ from email.mime.base import MIMEBase
 from email import encoders
 import aiofiles
 
+# --- Firebase Kütüphaneleri ---
+import firebase_admin
+from firebase_admin import credentials, messaging
+
 # --- JSON Kütüphanesi (Hata Korumalı) ---
 try:
     import ujson as json  # Ultra Hızlı JSON
@@ -35,18 +39,40 @@ except ImportError:
     GENAI_AVAILABLE = False
     print("⚠️ UYARI: 'google-genai' kütüphanesi eksik. (pip install google-genai)")
 
-# --- Firebase (Hata Korumalı) ---
-try:
-    import firebase_admin
-    from firebase_admin import credentials, messaging
-    FIREBASE_AVAILABLE = True
-except ImportError:
-    FIREBASE_AVAILABLE = False
-    print("⚠️ UYARI: Firebase kütüphanesi eksik.")
+# ------------------------------------
+# FIREBASE BAŞLATMA (Pylance Fix ve Güvenli Başlatma)
+# ------------------------------------
+# Değişkeni global alanda tanımlıyoruz ki Pylance hata vermesin.
+FIREBASE_AVAILABLE = False
 
-# --- Uygulama Başlatma ---
+try:
+    # 1. Önce Environment Variable kontrolü (Render gibi sunucular için)
+    firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
+    # 2. Yoksa yerel dosya kontrolü
+    SERVICE_ACCOUNT_PATH = "firebase-key.json"
+    
+    if firebase_creds_json:
+        cred_dict = json.loads(firebase_creds_json)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        FIREBASE_AVAILABLE = True
+        print("✅ Firebase Admin SDK (Env Var) başarıyla başlatıldı.")
+    elif os.path.exists(SERVICE_ACCOUNT_PATH):
+        cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+        firebase_admin.initialize_app(cred)
+        FIREBASE_AVAILABLE = True
+        print("✅ Firebase Admin SDK (Dosya) başarıyla başlatıldı.")
+    else:
+        print(f"⚠️ UYARI: Firebase anahtarı ({SERVICE_ACCOUNT_PATH} veya ENV) bulunamadı.")
+except Exception as e:
+    print(f"❌ Firebase Başlatma Hatası: {e}")
+
 app = Quart(__name__)
-app = cors(app)
+app = cors(app, allow_origin=[
+    "https://novawebb.com", 
+    "http://127.0.0.1:5500", 
+    "http://127.0.0.1:5502" # <-- Bu satırın olduğundan emin ol!
+])
 
 # Global Değişkenler
 session: aiohttp.ClientSession | None = None
@@ -101,7 +127,7 @@ GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 # Model Adı (Stabil sürüm seçildi)
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
@@ -234,16 +260,6 @@ async def startup():
     await load_data_to_memory()
     app.add_background_task(keep_alive)
     app.add_background_task(background_save_worker)
-    
-    if FIREBASE_AVAILABLE and not firebase_admin._apps:
-        try:
-            firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
-            if firebase_creds_json:
-                cred_dict = json.loads(firebase_creds_json)
-                cred = credentials.Certificate(cred_dict)
-                firebase_admin.initialize_app(cred)
-        except Exception as e:
-            print(f"⚠️ Firebase başlatılamadı: {e}")
 
 @app.after_serving
 async def cleanup():
@@ -390,6 +406,33 @@ async def gemma_cevap_async(message: str, conversation: list, session: aiohttp.C
 # ------------------------------
 # API ROUTE'LARI
 # ------------------------------
+
+# Bildirim Gönderme API Endpoint'i
+@app.route('/api/send-notification', methods=['POST'])
+async def send_notification():
+    if not FIREBASE_AVAILABLE:
+        return jsonify({"success": False, "error": "Firebase aktif değil (Anahtar bulunamadı)"}), 500
+
+    try:
+        data = await request.get_json()
+        title = data.get('title', 'Nova AI')
+        body = data.get('message')
+        
+        if not body:
+            return jsonify({"error": "Mesaj boş olamaz"}), 400
+
+        # 'all' konusuna (topic) abone olan herkese gönderiyoruz
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title=title,
+                body=body,
+            ),
+            topic="all", 
+        )
+        response = messaging.send(message)
+        return jsonify({"success": True, "message_id": response})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/chat", methods=["POST"])
 async def chat():
