@@ -466,11 +466,17 @@ async def chat():
         now_ts = datetime.now(timezone(timedelta(hours=3))).isoformat()
         user_history.append({"sender": "user", "text": message, "ts": now_ts})
         user_history.append({"sender": "nova", "text": reply, "ts": now_ts})
+
         GLOBAL_CACHE["api_cache"][cache_key] = {"response": reply}
-        
+
         DIRTY_FLAGS["history"] = True
         DIRTY_FLAGS["api_cache"] = True
+
+# 🔽 EKLENEN SATIR
+        await save_memory_to_disk(force=True)
+
         return jsonify({"response": reply, "userId": userId, "chatId": chatId})
+
     except Exception as e:
         print(f"❌ Chat Hatası: {traceback.format_exc()}")
         return jsonify({"response": "⚠️ Sunucu hatası oluştu."}), 500
@@ -487,7 +493,12 @@ async def delete_chat():
     if uid in GLOBAL_CACHE["history"] and cid in GLOBAL_CACHE["history"][uid]:
         del GLOBAL_CACHE["history"][uid][cid]
         DIRTY_FLAGS["history"] = True
+
+    # 🔽 EKLENEN SATIR
+        await save_memory_to_disk(force=True)
+
     return jsonify({"success": True})
+
 
 @app.route("/")
 async def home():
