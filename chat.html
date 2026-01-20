@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nova Chat — Tam Sürüm</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-messaging-compat.js"></script>
+  <link rel="stylesheet" href="chat.css">
+  <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+
+  <link rel="apple-touch-icon" href="icon-512.png">
+  
+  <meta name="theme-color" content="#00bfff">
+</head>
+
+<body>
+
+
+  <div id="settingsModal">
+    <div class="settings-box">
+        <div class="settings-header">
+            <h3 data-lang="settings_title">⚙️ Nova Ayarları</h3>
+            <button onclick="closeSettings()" class="close-btn">&times;</button>
+        </div>
+        
+        <div class="settings-content">
+            <div class="settings-group">
+                <label data-lang="lbl_language">🌍 Uygulama Dili</label>
+                <select id="languageSelect" onchange="changeLanguage(this.value)">
+                    <option value="tr">Türkçe 🇹🇷</option>
+                    <option value="en">English 🇬🇧</option>
+                </select>
+            </div>
+
+            <div class="settings-group">
+                <label data-lang="lbl_instructions">🧠 Özel Talimatlar</label>
+                <textarea id="customInstructions" placeholder="Nova'ya rol tanımla (Örn: Bir yazılım uzmanı gibi davran)"></textarea>
+                <small>Nova bu talimatlara göre cevap verir.</small>
+            </div>
+
+            <div class="settings-group">
+                <label data-lang="lbl_memory">💾 Bellek Yönetimi (Hafıza)</label>
+                <textarea id="memoryViewer" style="height: 100px; font-family: 'Courier New', monospace;"></textarea>
+                <small>Nova'nın senin hakkındaki bildiklerini buradan düzenle.</small>
+            </div>
+
+            <div class="settings-group">
+                <label data-lang="lbl_theme_color">🎨 Tema Rengi</label>
+                <input type="color" id="primaryColorPicker">
+            </div>
+
+            <div class="settings-group">
+                <label data-lang="lbl_voice_select">🎙️ Ses Seçimi</label>
+                <select id="voiceSelect"></select>
+            </div>
+        </div>
+        
+        <button onclick="saveSettings()" class="settings-save-btn" data-lang="btn_save">💾 DEĞİŞİKLİKLERİ KAYDET</button>
+    </div>
+</div>
+  <button id="menuToggle">☰ Menü</button>
+
+  <div id="updateModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2>🎉 Yenilikler & Güncellemeler</h2> <br> <h3>NOVA 2.7w GÜNCELLEMESİNE HOŞGELDİNİZ!</h3>
+        <span class="version-badge" id="modalVersionBadge">v4.2</span>
+      </div>
+      <div class="modal-body" id="updateList">
+      </div> <a href="hakkında.html">Nova</a>
+      <button class="modal-close-btn" onclick="closeUpdateModal()">Novaya Geç! 🚀</button>
+    </div>
+  </div>
+
+<div id="splash-screen" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000000; display:flex; align-items:center; justify-content:center; flex-direction:column; z-index:9999;">
+    <div class="logo-container">
+        <img src="ChatGPT Image 1 Kas 2025 12_57_42.png" alt="nova" class="spinning-logo">
+    </div>
+    
+    <h2 style="color:#00bfff; margin-top:30px; letter-spacing: 2px; font-weight: 400;" data-lang="loading_text">NOVA SİSTEMLERİ BAŞLATILIYOR</h2>
+    
+    <div class="loader-bar-container">
+        <div class="loader-bar-fill"></div>
+    </div>
+    
+    <p style="color:#4c6586; margin-top:15px; font-size: 0.8rem;" id="loading-status">Modüller yükleniyor...</p>
+</div>
+
+  <div id="sideMenu">
+    <img src="ChatGPT Image 1 Kas 2025 12_57_42.png" alt="nova"
+      style="width: 80%; max-width: 400px; height: auto; border-radius: 30px; display: block; margin: 0 auto;">
+    <h5> <a href="hakkında.html" style="color: #4f04ff;"> NOVA HAKKINDA
+      </a> </h5>
+    <h3>💬 Nova Chat</h3>
+    <button id="newChatBtn">➕ Yeni Sohbet</button>
+    <div id="menu"></div>
+    <button id="themeToggle">🌙 Tema Değiştir</button> <br> <button id="themeToggle"
+      onclick="window.location.href=('sesli.html')">🎙️Sesli Mod</button> <br> <br>
+    <button id="themeToggle" onclick="window.location.href=('live.html')">🔴NoVa Live</button>
+    <button id="themeToggle" onclick="openSettings()">⚙️ Nova Ayarları</button>
+  </div>
+  <div id="dragHandle"></div>
+
+  <div id="mainContent">
+    <header>
+      <div style="display:flex; align-items:center;">
+        <img src="ChatGPT Image 1 Kas 2025 12_57_42.png" alt="Nova Logo">
+        💬 Nova Chat
+      </div>
+      <span id="novaStatus">Hazır</span>
+    </header>
+    <div id="chatsContainer"></div>
+    <div id="inputArea">
+      <textarea id="input" placeholder="NoVa'ya Sor ..." autocomplete="off" rows="1"></textarea>
+      <button type="button" class="sendBtn" id="sendBtn">↑</button>
+      <button type="button" class="sendBtn" id="stopBtn">Durdur</button>
+    </div>
+    <div id="quickBtns">
+      <button>Merhaba</button>
+      <button>Nasılsın?</button>
+      <button>Hava durumu</button>
+    </div>
+    <div id="emojiPicker"></div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="chat.js"></script>
+
+</body>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js')
+      .then(() => console.log('Service Worker registered'))
+      .catch(err => console.log('SW registration failed', err));
+  }
+</script>
+
+
+</html>
