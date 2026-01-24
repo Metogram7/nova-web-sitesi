@@ -125,10 +125,27 @@ GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_A"),
     os.getenv("GEMINI_API_KEY_B"),
     os.getenv("GEMINI_API_KEY_C"),
-    os.getenv("GEMINI_API_KEY") 
+    os.getenv("GEMINI_API_KEY_D"),
+    os.getenv("GEMINI_API_KEY_E"),
+    os.getenv("GEMINI_API_KEY_F"),
 ]
+
+
+# ------------------------------------
+# ROUND-ROBIN KEY YÖNETİMİ
+# ------------------------------------
+CURRENT_KEY_INDEX = 0
+KEY_LOCK = asyncio.Lock()
+
+async def get_next_gemini_key():
+    global CURRENT_KEY_INDEX
+    async with KEY_LOCK:
+        key = GEMINI_API_KEYS[CURRENT_KEY_INDEX]
+        CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
+        return key
+    
 # Boş anahtarları temizle
-GEMINI_API_KEYS = [key for key in GEMINI_API_KEYS if key]
+GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]
 
 DISABLED_KEYS = {} 
 
@@ -360,75 +377,81 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
         return "⚠️ API anahtarı eksik."
 
     live_context = ""
-    # Modelin zekasıyla internet araması gerekip gerekmediğine karar veriyoruz
     if await should_search_internet(message, session):
-        # Arama yaparken bugünün tarihini ekle ki en güncel sonuç gelsin
         search_query = f"{message} {get_nova_date()}"
         search_results = await fetch_live_data(search_query)
-        live_context = f"\n\n[ARAMA SONUÇLARI]:\n{search_results}\n\nTalimat: Yukarıdaki sonuçlar günceldir, bunları kullanarak direkt cevap ver."
+        live_context = (
+            "\n\n[ARAMA SONUÇLARI]:\n"
+            f"{search_results}\n\n"
+            "Talimat: Yukarıdaki sonuçlar günceldir, bunları kullanarak direkt cevap ver."
+        )
 
     recent_history = conversation[-6:]
     contents = []
+
     for msg in recent_history:
-        role = "user" if msg["sender"] == "user" else "model"
-        # Mesaj içeriğini string'e çevir
-        user_parts = [
-            {"text": f"{user_name or 'Kullanıcı'}: {message}{live_context}"}
-        ]   
-
-        if image_data:
-            if "," in image_data:
-                _, image_data = image_data.split(",", 1)
-
-            user_parts.append({
-                "inline_data": {
-                    "mime_type": "image/jpeg",
-                    "data": image_data
-                }
-            })
-
         contents.append({
-            "role": "user",
-            "parts": user_parts
+            "role": "user" if msg["sender"] == "user" else "model",
+            "parts": [{"text": msg["message"]}]
         })
 
-    contents.append({"role": "user", "parts": [{"text": f"{user_name or 'Kullanıcı'}: {message}{live_context}"}]})
+    user_parts = [{"text": f"{user_name or 'Kullanıcı'}: {message}{live_context}"}]
+
+    if image_data:
+        if "," in image_data:
+            _, image_data = image_data.split(",", 1)
+        user_parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": image_data
+            }
+        })
+
+    contents.append({
+        "role": "user",
+        "parts": user_parts
+    })
 
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 2048},
+        "system_instruction": {
+            "parts": [{"text": get_system_prompt()}]
+        },
+        "generationConfig": {
+            "temperature": 0.5,
+            "maxOutputTokens": 2048
+        }
     }
 
-    shuffled_keys = list(GEMINI_API_KEYS)
-    random.shuffle(shuffled_keys)
+    # 🔁 A → F → A (SADECE HATA OLURSA GEÇER)
+    for _ in range(len(GEMINI_API_KEYS)):
+        key = await get_next_gemini_key()
 
-    for key in shuffled_keys:
-        if key in DISABLED_KEYS and datetime.now() < DISABLED_KEYS[key]: continue
         try:
-            async with session.post(f"{GEMINI_REST_URL}?key={key}", json=payload, timeout=25) as resp:
+            async with session.post(
+                f"{GEMINI_REST_URL}?key={key}",
+                json=payload,
+                timeout=25
+            ) as resp:
+
                 if resp.status == 200:
                     data = await resp.json()
-                    # Güvenli erişim
-                    if "candidates" in data and data["candidates"]:
-                        parts = data["candidates"][0]["content"]["parts"]
-                        if parts:
-                            return parts[0]["text"].strip()
-                        else:
-                            return "⚠️ Model boş yanıt döndü."
-                    else:
-                        return "⚠️ Model yanıt üretemedi."
-                        
+                    parts = data["candidates"][0]["content"]["parts"]
+                    return parts[0]["text"].strip()
+
                 elif resp.status == 429:
-                    DISABLED_KEYS[key] = datetime.now() + timedelta(minutes=1)
+                    print(f"⚠️ Gemini key limiti dolu → geçiliyor: {key[:6]}***")
+                    continue
+
                 else:
                     error_text = await resp.text()
-                    print(f"API Hata ({resp.status}): {error_text}")
-        except Exception as e: 
-            print(f"Request Hatası: {e}")
+                    print(f"❌ Gemini API Hata ({resp.status}): {error_text}")
+
+        except Exception as e:
+            print(f"❌ Gemini request hatası, key atlandı: {e}")
             continue
 
-    return "⚠️ Şu an yoğunluk var, lütfen biraz bekleyip tekrar dene."
+    return "⚠️ Şu an tüm API anahtarları limitte. Lütfen biraz sonra tekrar dene."
 
 # ------------------------------
 # API ROUTE'LARI
