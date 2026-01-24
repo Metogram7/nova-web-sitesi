@@ -619,7 +619,7 @@ async def chat():
             model=GEMINI_MODEL_NAME,
             contents=contents,
             config=types.GenerateContentConfig(
-                system_instruction=data.get("systemPrompt", "Sen Nova'sın."),
+                system_instruction=get_system_prompt(),
                 temperature=0.7
             )
         )
