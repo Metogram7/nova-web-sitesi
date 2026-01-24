@@ -1,473 +1,458 @@
 <!DOCTYPE html>
 <html lang="tr">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nova Chat — Mobil Uyumlu</title>
-<style>
-body {
-  margin:0;
-  font-family:"Segoe UI",sans-serif;
-  display:flex;
-  height:100vh;
-  background:#0d0d0d;
-  color:white;
-  overflow:hidden;
-}
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 
-/* --- Sol Menü --- */
-#sideMenu {
-  width:280px;
-  min-width:150px;
-  max-width:500px;
-  background:#111;
-  border-right:2px solid #00d4ff;
-  display:flex;
-  flex-direction:column;
-  padding:15px;
-  overflow-y:auto;
-  box-shadow:2px 0 10px rgba(0,0,0,0.5);
-  transition: transform 0.3s ease;
-  z-index:1000;
-}
-#sideMenu h3 {
-  margin:0 0 15px 0;
-  color:#00d4ff;
-  font-size:1.4rem;
-  text-align:center;
-  border-bottom:1px solid #00d4ff;
-  padding-bottom:8px;
-}
-#sideMenu button, #sideMenu .chatRow button.chatBtn {
-  margin:5px 0;
-  border:none;
-  border-radius:12px;
-  padding:12px;
-  cursor:pointer;
-  font-weight:bold;
-  transition:0.3s;
-  background:linear-gradient(45deg,#00bfff,#00d4ff);
-  color:#000;
-  text-align:left;
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  box-shadow:0 2px 6px rgba(0,0,0,0.5);
-}
-#sideMenu button:hover, #sideMenu .chatRow button.chatBtn:hover {
-  background:linear-gradient(45deg,#00d4ff,#0099cc);
-  color:white;
-}
-#sideMenu .deleteBtn {
-  background:#ff5555;
-  flex:none;
-  margin-left:5px;
-  padding:8px 10px;
-  border-radius:10px;
-  box-shadow:0 2px 6px rgba(0,0,0,0.5);
-  transition:0.2s;
-}
-#sideMenu .deleteBtn:hover { background:#ff2222; }
-#menu { flex:1; margin-top:10px; overflow-y:auto; }
+    <link rel="apple-touch-icon" href="icon-512.png">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova AI | Premium Experience</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #020c1b;
+            --accent-primary: #00bfff;
+            --accent-secondary: #7b2cbf;
+            --glass-bg: rgba(10, 25, 47, 0.65);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --text-main: #e6f1ff;
+            --text-muted: #8892b0;
+            --yt-red: #ff0000;
+        }
 
-/* Drag handle */
-#dragHandle {
-  width:5px;
-  cursor:col-resize;
-  background:transparent;
-}
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Outfit', sans-serif; }
 
-/* --- Ana İçerik --- */
-#mainContent {
-  flex:1;
-  display:flex;
-  flex-direction:column;
-}
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            overflow: hidden;
+            height: 100vh;
+            position: relative;
+        }
 
-header {
-  text-align:center;
-  padding:15px;
-  font-size:1.5rem;
-  font-weight:bold;
-  color:#00d4ff;
-  border-bottom:2px solid #00d4ff;
-  background:#080808;
-}
+        /* --- ARKA PLAN EFEKTLERİ --- */
+        .ambient-light {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            overflow: hidden;
+            z-index: -1;
+            pointer-events: none;
+        }
+        .orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(90px);
+            opacity: 0.35;
+            animation: moveOrb 15s infinite alternate ease-in-out;
+        }
+        .orb-1 { width: 500px; height: 500px; background: var(--accent-primary); top: -150px; left: -100px; }
+        .orb-2 { width: 400px; height: 400px; background: var(--accent-secondary); bottom: -100px; right: -100px; animation-delay: -5s; }
 
-#chatsContainer {
-  flex:1;
-  display:flex;
-  flex-direction:column;
-  overflow-y:auto;
-  position:relative;
-  padding:10px;
-}
+        @keyframes moveOrb {
+            0% { transform: translate(0, 0) scale(1); }
+            100% { transform: translate(40px, 60px) scale(1.1); }
+        }
 
-.chatDiv {
-  flex:1;
-  display:flex;
-  flex-direction:column;
-  overflow-y:auto;
-  padding:20px;
-}
+        /* --- LOGO ALANI --- */
+        .header-fixed {
+            position: fixed;
+            top: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
 
-/* Mesajlar */
-.msg {
-  max-width:80%;
-  margin:8px 0;
-  padding:10px 16px;
-  border-radius:16px;
-  white-space:pre-wrap;
-  word-wrap:break-word;
-  font-size:1rem;
-  line-height:1.4;
-  position:relative;
-}
-.msg .timestamp {
-  font-size:0.7rem;
-  color:#999;
-  position:absolute;
-  bottom:-16px;
-  right:10px;
-}
-.user { background:#b6f0ff; color:#000; align-self:flex-end; margin-left:auto; }
-.nova { background:#111; border:1px solid #00d4ff; color:#00d4ff; align-self:flex-start; margin-right:auto; }
+        .logo-container {
+            position: relative;
+            padding: 10px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(5px);
+            box-shadow: 0 0 30px rgba(0, 191, 255, 0.1);
+            animation: floatContainer 6s ease-in-out infinite;
+        }
 
-/* Input alanı */
-#inputArea {
-  display:flex;
-  padding:10px 15px;
-  background:#111;
-  border-top:1px solid #00d4ff;
-  gap:5px;
-  flex-wrap:wrap;
-}
-#input {
-  flex:1;
-  padding:12px 16px;
-  border-radius:12px;
-  border:none;
-  outline:none;
-  font-size:1rem;
-  background:#111;
-  color:white;
-}
-button.sendBtn { padding:12px 20px; border-radius:12px; border:none; background:#00d4ff; font-weight:bold; cursor:pointer; }
-button#stopBtn { background:#ff5555; }
+        .hero-logo {
+            width: 140px;
+            height: auto;
+            display: block;
+            border-radius: 20px;
+            filter: drop-shadow(0 0 15px rgba(0, 191, 255, 0.4));
+            animation: glowPulse 4s infinite alternate;
+        }
 
-/* Quick buttons ve emoji picker */
-#quickBtns {
-  display:flex;
-  gap:5px;
-  margin-top:5px;
-  flex-wrap:wrap;
-}
-#quickBtns button {
-  padding:5px 10px;
-  border-radius:8px;
-  border:none;
-  background:#ffdd00;
-  color:#000;
-  cursor:pointer;
-}
-#emojiPicker {
-  display:flex;
-  gap:5px;
-  flex-wrap:wrap;
-  margin-top:5px;
-}
-#emojiPicker span {
-  cursor:pointer;
-  font-size:1.2rem;
-}
+        .logo-container:hover {
+            transform: scale(1.1);
+            border-color: var(--accent-primary);
+        }
 
-/* Responsive */
-@media(max-width:800px){
-  body { flex-direction:column; }
-  #sideMenu {
-    position:fixed;
-    height:100%;
-    transform:translateX(-100%);
-  }
-  #sideMenu.active { transform:translateX(0); }
-  #dragHandle { display:none; }
-  #mainContent { flex:1; }
-  #inputArea { flex-direction:column; }
-  #input, button.sendBtn, #stopBtn { width:100%; }
-  header { font-size:1.3rem; padding:10px; }
-}
+        @keyframes floatContainer {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-15px); }
+        }
 
-/* Menü aç/kapa butonu mobil */
-#menuToggle {
-  display:none;
-  position:fixed;
-  top:10px;
-  left:10px;
-  z-index:1100;
-  background:#00d4ff;
-  color:#000;
-  border:none;
-  border-radius:8px;
-  padding:8px 12px;
-  font-weight:bold;
-  cursor:pointer;
-}
-@media(max-width:800px){ #menuToggle { display:block; } }
-</style>
+        @keyframes glowPulse {
+            0% { filter: drop-shadow(0 0 10px rgba(0, 191, 255, 0.3)); }
+            100% { filter: drop-shadow(0 0 25px rgba(0, 191, 255, 0.6)); }
+        }
+
+        /* --- ANA İÇERİK YAPISI --- */
+        #landing-wrapper {
+            height: 100vh;
+            overflow-y: auto;
+            scroll-snap-type: y mandatory;
+            scroll-behavior: smooth;
+            scrollbar-width: none;
+            padding-bottom: 80px; /* Dock için boşluk */
+        }
+        #landing-wrapper::-webkit-scrollbar { display: none; }
+
+        .section {
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            scroll-snap-align: start;
+            flex-direction: column;
+            padding: 20px;
+        }
+
+        /* --- CAM PANEL --- */
+        .content-box {
+            background: var(--glass-bg);
+            backdrop-filter: blur(30px);
+            -webkit-backdrop-filter: blur(30px);
+            padding: 60px 50px;
+            border-radius: 35px;
+            border: 1px solid var(--glass-border);
+            max-width: 650px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            transition: transform 0.5s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .content-box::before {
+            content: '';
+            position: absolute;
+            top: 0; left: -50%;
+            width: 100%; height: 100%;
+            background: linear-gradient(to right, transparent, rgba(255,255,255,0.05), transparent);
+            transform: skewX(-25deg);
+            transition: 0.5s;
+            pointer-events: none;
+        }
+        
+        .content-box:hover::before { left: 100%; transition: 0.7s; }
+
+        .glow-title {
+            font-size: 3.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #fff 20%, var(--accent-primary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 15px;
+            letter-spacing: -1.5px;
+        }
+
+        .sub-text {
+            color: var(--text-muted);
+            font-size: 1.15rem;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+
+        /* --- INPUT VE BUTONLAR --- */
+        .input-group {
+            margin-top: 30px;
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .nova-input {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--glass-border);
+            color: #fff;
+            padding: 18px 25px;
+            border-radius: 16px;
+            width: 280px;
+            font-size: 1rem;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+        .nova-input:focus {
+            background: rgba(255,255,255,0.08);
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 20px rgba(0, 191, 255, 0.15);
+        }
+
+        .action-btn {
+            background: linear-gradient(135deg, var(--accent-primary), #0088cc);
+            color: #fff;
+            border: none;
+            padding: 18px 40px;
+            border-radius: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+        .action-btn:hover {
+            transform: translateY(-3px) scale(1.02);
+            box-shadow: 0 15px 30px rgba(0, 191, 255, 0.3);
+        }
+
+        /* --- YOUTUBE BUTONU ÖZEL STİLİ --- */
+        .yt-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #fff;
+            padding: 18px 45px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-size: 1.1rem;
+            font-weight: 600;
+            transition: all 0.4s ease;
+            margin-top: 20px;
+        }
+        
+        .yt-btn svg { width: 28px; height: 28px; fill: #fff; transition: 0.3s; }
+
+        .yt-btn:hover {
+            background: var(--yt-red);
+            border-color: var(--yt-red);
+            box-shadow: 0 0 30px rgba(255, 0, 0, 0.4);
+            transform: translateY(-5px);
+        }
+        .yt-btn:hover svg { transform: scale(1.1); }
+
+        /* --- ALT DOCK --- */
+        .bottom-dock {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(20px);
+            padding: 12px 30px;
+            border-radius: 24px;
+            border: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            gap: 25px;
+            z-index: 2000;
+            box-shadow: 0 15px 40px rgba(0,0,0,0.4);
+            opacity: 0;
+            animation: dockSlideUp 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) 0.5s forwards;
+        }
+        @keyframes dockSlideUp { from { opacity: 0; bottom: -50px; } to { opacity: 1; bottom: 30px; } }
+
+        .dock-btn {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            text-decoration: none; color: var(--text-muted); font-size: 0.75rem; gap: 6px;
+            transition: 0.3s; position: relative; min-width: 60px;
+        }
+        .dock-btn svg { width: 26px; height: 26px; fill: currentColor; transition: 0.3s; }
+        .dock-btn:hover { color: #fff; }
+        .dock-btn:hover svg { fill: var(--accent-primary); transform: translateY(-5px); }
+
+        .beta-badge {
+            position: absolute; top: -10px; right: -5px;
+            background: linear-gradient(45deg, var(--accent-secondary), #9d4edd);
+            color: #fff; font-size: 0.55rem; padding: 3px 8px; border-radius: 8px;
+            font-weight: 700; box-shadow: 0 2px 10px rgba(123, 44, 191, 0.4);
+            animation: badgeBounce 2s infinite;
+        }
+        @keyframes badgeBounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+
+    </style>
 </head>
 <body>
 
-<button id="menuToggle">☰ Menü</button>
+    <div class="ambient-light">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+    </div>
 
-<div id="sideMenu">
-  <h3>💬 Nova Chat</h3>
-  <button id="newChatBtn">➕ Yeni Sohbet</button>
-  <div id="menu"></div>
-</div>
-<div id="dragHandle"></div>
-<div id="mainContent">
-  <header>💬 Nova Chat <span id="novaStatus">Hazır</span></header>
-  <div id="chatsContainer"></div>
-  <div id="inputArea">
-    <input id="input" type="text" placeholder="Bir şey yaz..." autocomplete="off">
-    <button type="button" class="sendBtn" id="sendBtn">Gönder</button>
-    <button type="button" class="sendBtn" id="stopBtn">Durdur</button>
-  </div>
-  <div id="quickBtns">
-    <button>Merhaba</button>
-    <button>Nasılsın?</button>
-    <button>Hava durumu</button>
-  </div>
-  <div id="emojiPicker"></div>
-</div>
+    <div class="header-fixed">
+        <div class="logo-container">
+            <img src="ChatGPT Image 1 Kas 2025 12_57_42.png" class="hero-logo" alt="Nova AI Logo">
+        </div>
+    </div>
 
-<script>
-const sideMenu = document.getElementById("sideMenu");
-const menuToggle = document.getElementById("menuToggle");
-menuToggle.onclick = ()=>{ sideMenu.classList.toggle("active"); };
+    <div id="landing-wrapper">
+        
+        <section class="section">
+            <div class="content-box">
+                <h1 class="glow-title">NOVA</h1>
+                <p class="sub-text">Yapay zeka ile etkileşimin estetik zirvesi. <rb>Sınırları kaldır, potansiyelini keşfet. <br> NOVANIN BÜYÜMESİNE DESTEK OLUN!</p>
+                <div style="margin-top:40px; opacity:0.6; font-size:0.9rem; animation: floatArrow 2s infinite;">
+                    ▼ Aşağı kaydır
+                </div>
+            </div>
+        </section>
 
-const dragHandle = document.getElementById("dragHandle");
-let isResizing = false;
-dragHandle.addEventListener("mousedown", e=>{ isResizing = true; document.body.style.cursor="col-resize"; });
-document.addEventListener("mousemove", e=>{
-  if(!isResizing) return;
-  let newWidth = e.clientX;
-  if(newWidth < 150) newWidth = 150;
-  if(newWidth > 500) newWidth = 500;
-  sideMenu.style.width = newWidth + "px";
-});
-document.addEventListener("mouseup", e=>{ if(isResizing){ isResizing=false; document.body.style.cursor="default"; } });
+        <section class="section">
+            <div class="content-box" id="auth-container">
+                </div>
+        </section>
 
-const chatsContainer = document.getElementById("chatsContainer");
-const input = document.getElementById("input");
-const sendBtn = document.getElementById("sendBtn");
-const stopBtn = document.getElementById("stopBtn");
-const menu = document.getElementById("menu");
-const novaStatus = document.getElementById("novaStatus");
-const quickBtns = document.getElementById("quickBtns");
-const emojiPicker = document.getElementById("emojiPicker");
-const newChatBtn = document.getElementById("newChatBtn");
-const BACKEND_URL = 'http://localhost:5000/api';
+        <section class="section">
+            <div class="content-box">
+                <h2 class="glow-title" style="font-size: 2.8rem;">Nova'yı Keşfet</h2>
+                <p class="sub-text">Nova'nın gelişim sürecini, yeteneklerini ve gelecek vizyonunu yakından tanıyın. YouTube kanalımıza katılın.</p>
+                
+                <a href="https://www.youtube.com/@AI_Nova_AI" target="_blank" class="yt-btn">
+                    <svg viewBox="0 0 24 24"><path d="M10 15l5.19-3L10 9v6m11.56-7.83c.13.47.22 1.1.28 1.9.07.8.1 1.49.1 2.09L22 12c0 2.19-.16 3.8-.44 4.83-.25.9-.83 1.48-1.73 1.73-.47.13-1.33.22-2.65.28-1.3.07-2.49.1-3.59.1L12 19c-4.19 0-6.8-.16-7.83-.44-.9-.25-1.48-.83-1.73-1.73-.13-.47-.22-1.1-.28-1.9-.07-.8-.1-1.49-.1-2.09L2 12c0-2.19.16-3.8.44-4.83.25-.9.83-1.48 1.73-1.73.47-.13 1.33-.22 2.65-.28 1.3-.07 2.49-.1 3.59-.1L12 5c4.19 0 6.8.16 7.83.44.9.25 1.48.83 1.73 1.73z"/></svg>
+                    Daha Çok Tanı
+                </a>
+            </div>
+        </section>
 
-let userId = localStorage.getItem("nova_user_id");
-if(!userId){
-  userId="user_"+Date.now()+"_"+Math.floor(Math.random()*10000);
-  localStorage.setItem("nova_user_id",userId);
+    </div>
+
+    <nav class="bottom-dock">
+        <a href="chat.html" class="dock-btn">
+            <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+            <span>Chat</span>
+        </a>
+        
+        <a href="sesli.html" class="dock-btn">
+            <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.66 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+            <span>Voice</span>
+        </a>
+
+        <a href="live.html" class="dock-btn">
+            <div class="beta-badge">BETA</div>
+            <svg viewBox="0 0 24 24"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+            <span>Live</span>
+        </a>
+    </nav>
+
+ <script type="module">
+/* =====================================================
+   AUTH / KULLANICI
+===================================================== */
+function getNovaUser() {
+    return localStorage.getItem("nova_user");
+}
+function setNovaUser(name) {
+    localStorage.setItem("nova_user", name);
+}
+function clearNovaUser() {
+    localStorage.removeItem("nova_user");
 }
 
-let currentChat = localStorage.getItem("nova_last_chat") || "default";
-let sending = false;
-let userInfo = JSON.parse(localStorage.getItem("nova_user_info_"+userId)||"{}");
+function updateAuthUI() {
+    const user = getNovaUser();
+    const box = document.getElementById("auth-container");
 
-function renderMenu(){
-  menu.innerHTML="";
-  const voiceBtn = document.createElement("button");
-  voiceBtn.textContent = "Sesli Mod";
-  voiceBtn.onclick = () => { window.location.href = "sesli.html"; };
-  menu.appendChild(voiceBtn);
+    if (!box) return;
 
-  fetch(`${BACKEND_URL}/history?userId=${userId}`)
-    .then(r => r.json())
-    .then(data => {
-      Object.keys(data).forEach(cid => {
-        const msgs = data[cid] || [];
-        const lastMsg = msgs.length > 0 ? msgs[msgs.length-1].text : "Yeni Sohbet";
-        addChatToMenu(cid, lastMsg, true);
-      });
-    });
-}
-
-function addChatToMenu(chatId, lastMessage="Yeni Sohbet", skipSave=false){
-  if([...menu.querySelectorAll(".chatBtn")].some(b=>b.dataset.id===chatId)) return;
-  const row = document.createElement("div");
-  row.className="chatRow";
-  const chatBtn = document.createElement("button");
-  chatBtn.className="chatBtn";
-  chatBtn.dataset.id = chatId;
-  chatBtn.onclick = ()=>{ loadChat(chatId); };
-  const deleteBtn = document.createElement("button");
-  deleteBtn.className="deleteBtn";
-  deleteBtn.textContent = "❌";
-  deleteBtn.onclick = async ()=>{
-    if(confirm("Bu sohbeti silmek istediğine emin misin?")){
-      try{
-        const res = await fetch(`${BACKEND_URL}/delete_chat`,{
-          method:"POST",
-          headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({userId, chatId})
-        });
-        const data = await res.json();
-        if(data.success){
-          row.remove();
-          const div = document.getElementById(chatId);
-          if(div) div.remove();
-          if(currentChat===chatId) startNewChat();
-        } else { alert("Silme başarısız: " + (data.error||"")); }
-      }catch(err){ console.error(err); alert("Silme sırasında hata!"); }
+    if (user) {
+        box.innerHTML = `
+            <h1 class="glow-title">Tekrar Merhaba,<br>${user}</h1>
+            <p class="sub-text">Nova senin için hazır.</p>
+            <div style="margin-top:30px; display:flex; gap:15px; justify-content:center; flex-wrap:wrap;">
+                <button class="action-btn" onclick="goLink('chat.html')">Sohbete Başla</button>
+                <button class="action-btn" style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.2)" onclick="logout()">Çıkış</button>
+            </div>
+        `;
+    } else {
+        box.innerHTML = `
+            <h2 class="glow-title" style="font-size:2.8rem">Kimlik Doğrulama</h2>
+            <p class="sub-text">Sana isminle hitap edebilmem için lütfen kendini tanıt.</p>
+            <div class="input-group">
+                <input id="nameInput" class="nova-input" placeholder="İsminiz..." autocomplete="off">
+                <button class="action-btn" onclick="login()">Giriş Yap</button>
+            </div>
+        `;
     }
-  };
-  row.appendChild(chatBtn);
-  row.appendChild(deleteBtn);
-  menu.appendChild(row);
-  updateChatBtnLabel(chatBtn, lastMessage);
 }
 
-function updateChatBtnLabel(button, lastMessage){
-  if(lastMessage.length>20) lastMessage = lastMessage.slice(0,20) + "...";
-  button.textContent = lastMessage;
-}
+window.login = function () {
+    const input = document.getElementById("nameInput");
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) return;
+    setNovaUser(val);
+    updateAuthUI();
+};
 
-function loadChat(cid){
-  currentChat = cid;
-  Array.from(chatsContainer.children).forEach(c=>c.style.display="none");
-  let div = document.getElementById(cid);
-  if(!div){
-    div = document.createElement("div");
-    div.className="chatDiv";
-    div.id=cid;
-    chatsContainer.appendChild(div);
-  }
-  div.style.display="flex";
-  fetch(`${BACKEND_URL}/history?userId=${userId}`)
-    .then(r=>r.json())
-    .then(data=>{
-      const msgs = data[cid]||[];
-      div.innerHTML="";
-      msgs.forEach(m=> addMessage(m.text,m.sender,div));
-    });
-  localStorage.setItem("nova_last_chat",cid);
-}
+window.logout = function () {
+    clearNovaUser();
+    updateAuthUI();
+};
 
-function startNewChat(){
-  const newId = "chat_"+Date.now()+"_"+Math.floor(Math.random()*10000);
-  addChatToMenu(newId, "Yeni Sohbet");
-  loadChat(newId);
-}
+window.goLink = function (url) {
+    window.location.href = url;
+};
 
-newChatBtn.addEventListener("click", e=>{
-  e.preventDefault();
-  startNewChat();
-});
+/* =====================================================
+   FIREBASE PUSH (ASİL MEVZU 🔥)
+===================================================== */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+import { getMessaging, getToken } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-messaging.js";
 
-function addMessage(text, sender, container=null){
-  const parent = container || document.getElementById(currentChat);
-  const div=document.createElement("div");
-  div.className="msg "+sender;
-  div.innerHTML = text;
+const firebaseConfig = {
+    apiKey: "AIzaSyDqQAHCB2MizgN5Id5Ezfr3UPE1P3UlSS8",
+    authDomain: "nova-329c7.firebaseapp.com",
+    projectId: "nova-329c7",
+    storageBucket: "nova-329c7.firebasestorage.app",
+    messagingSenderId: "284547967902",
+    appId: "1:284547967902:web:7dd2e64d1a643a30e5c48f"
+};
 
-  const timestamp=document.createElement("div");
-  timestamp.className="timestamp";
+const app = initializeApp(firebaseConfig);
+const messaging = getMessaging(app);
 
-  const now = new Date();
-  // Türkiye saati (UTC+3)
-  const trTime = new Date(now.getTime() + 3*60*60*1000); 
-  timestamp.textContent = trTime.getFullYear() + "-" +
-                           String(trTime.getMonth()+1).padStart(2,'0') + "-" +
-                           String(trTime.getDate()).padStart(2,'0') + " " +
-                           String(trTime.getHours()).padStart(2,'0') + ":" +
-                           String(trTime.getMinutes()).padStart(2,'0');
-
-  div.appendChild(timestamp);
-  parent.appendChild(div);
-  parent.scroll({top: parent.scrollHeight,behavior:"smooth"});
-  return div;
-
-
-  div.appendChild(timestamp);
-  parent.appendChild(div);
-  parent.scroll({top: parent.scrollHeight,behavior:"smooth"});
-  return div;
-}
-
-async function sendMessage(msg=null){
-  if(sending) return;
-  sending=true;
-  const text=msg||input.value.trim();
-  if(!text){sending=false;return;}
-  input.value="";
-  const chatDiv = document.getElementById(currentChat);
-  addMessage(text,"user",chatDiv);
-  const typingDiv=addMessage("Nova yazıyor...","nova",chatDiv);
-  novaStatus.textContent="Nova yazıyor...";
-
-  try{
-    const resHist = await fetch(`${BACKEND_URL}/history?userId=${userId}`);
-    const historyData = await resHist.json();
-    const chatHistory = historyData[currentChat] || [];
-    const res=await fetch(BACKEND_URL+"/chat",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({userId,currentChat,message:text,userInfo,history:chatHistory})
-    });
-    const data=await res.json();
-    typingDiv.textContent="";
-    addMessage(data.response||"⚠️ Hata", "nova", chatDiv);
-    if(data.updatedUserInfo){
-      userInfo=data.updatedUserInfo;
-      localStorage.setItem("nova_user_info_"+userId,JSON.stringify(userInfo));
+async function registerPush() {
+    if (!("serviceWorker" in navigator)) {
+        console.warn("Service Worker yok");
+        return;
     }
-  }catch(err){
-    typingDiv.textContent="Bağlantı hatası 🚫";
-    console.error(err);
-  }
-  novaStatus.textContent="Hazır";
-  sending=false;
+
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+        console.warn("Bildirim izni verilmedi");
+        return;
+    }
+
+    const token = await getToken(messaging, {
+        vapidKey: "BDMDVEtUfabWh6LAnM15zLGcK2R-1kxuSvjwegdx0q-I46l9GnBSSKimwAoIxUhOxh5QtRxAtt0Hj9PBl19qlxU"
+    });
+
+    if (!token) {
+        console.warn("FCM token alınamadı");
+        return;
+    }
+
+    console.log("📱 FCM TOKEN:", token);
+
+    // Token backend'e gönder
+    await fetch("https://nova-chat-d50f.onrender.com/register-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token })
+    });
 }
 
-input.addEventListener("keydown", e=>{
-  if(e.key==="Enter" && !e.shiftKey){
-    e.preventDefault();
-    sendMessage();
-  }
-});
-
-sendBtn.addEventListener("click", e=>{
-  e.preventDefault();
-  sendMessage();
-});
-
-stopBtn.addEventListener("click", e=>{
-  e.preventDefault();
-});
-
-emojiPicker.innerHTML = "";
-"😀😂😍😎🤔😢❤️🤖".split("").forEach(e=>{
-  const span=document.createElement("span");
-  span.textContent=e;
-  span.onclick=()=>{ input.value+=e; input.focus(); };
-  emojiPicker.appendChild(span);
-});
-
-quickBtns.querySelectorAll("button").forEach(b=>{
-  b.addEventListener("click", e=>{
-    e.preventDefault();
-    sendMessage(b.textContent);
-  });
-});
-
-window.addEventListener("DOMContentLoaded", ()=>{
-  loadChat(currentChat);
-  renderMenu();
+/* =====================================================
+   BAŞLAT
+===================================================== */
+window.addEventListener("load", () => {
+    updateAuthUI();
+    registerPush();
 });
 </script>
 
