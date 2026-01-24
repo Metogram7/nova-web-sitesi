@@ -421,35 +421,22 @@ async def gemma_cevap_async(
     user_name=None,
     image_data=None
 ):
-    print("🟢 gemma_cevap_async çağrıldı")
-
     if not GEMINI_API_KEYS:
-        print("❌ GEMINI_API_KEYS boş")
         return "⚠️ API anahtarı eksik."
 
-    # -------------------------
     # 🌍 Gerekirse canlı arama
-    # -------------------------
     live_context = ""
-    try:
-        if await should_search_internet(message, session):
-            print("🌐 İnternetten arama yapılacak")
-            search_query = f"{message} {get_nova_date()}"
-            search_results = await fetch_live_data(search_query)
-            live_context = (
-                "\n\n[ARAMA SONUÇLARI]:\n"
-                f"{search_results}\n\n"
-                "Talimat: Yukarıdaki sonuçlar günceldir, bunları kullanarak direkt cevap ver."
-            )
-        else:
-            print("ℹ️ İnternet araması gerekmedi")
-    except Exception as e:
-        print(f"⚠️ Arama hatası (devam ediliyor): {e}")
+    if await should_search_internet(message, session):
+        search_query = f"{message} {get_nova_date()}"
+        search_results = await fetch_live_data(search_query)
+        live_context = (
+            "\n\n[ARAMA SONUÇLARI]:\n"
+            f"{search_results}\n\n"
+            "Talimat: Yukarıdaki sonuçlar günceldir, bunları kullanarak direkt cevap ver."
+        )
 
-    # -------------------------
-    # 🧠 Son konuşma geçmişi
-    # -------------------------
-    recent_history = conversation[-6:]
+    # 🧠 SON 8 MESAJ
+    recent_history = conversation[-8:]
     contents = []
 
     for msg in recent_history:
@@ -458,18 +445,14 @@ async def gemma_cevap_async(
             "parts": [{"text": msg["message"]}]
         })
 
-    # -------------------------
-    # 👤 Kullanıcı mesajı
-    # -------------------------
+    # 👤 Yeni kullanıcı mesajı
     user_parts = [{
         "text": f"{user_name or 'Kullanıcı'}: {message}{live_context}"
     }]
 
     if image_data:
-        print("🖼️ Görsel veri eklendi")
         if "," in image_data:
             _, image_data = image_data.split(",", 1)
-
         user_parts.append({
             "inline_data": {
                 "mime_type": "image/jpeg",
@@ -482,32 +465,20 @@ async def gemma_cevap_async(
         "parts": user_parts
     })
 
-    # -------------------------
-    # 📦 Payload
-    # -------------------------
     payload = {
         "contents": contents,
         "system_instruction": {
             "parts": [{"text": get_system_prompt()}]
         },
         "generationConfig": {
-            "temperature": 0.5,
+            "temperature": 0.6,
             "maxOutputTokens": 2048
         }
     }
 
-    print("📦 Payload hazırlandı")
-
-    # -------------------------------------------------
-    # 🔁 KEY DÖNGÜSÜ
-    # A → B → C → D → E → F
-    # ❗ SADECE HATA OLURSA GEÇER
-    # ❗ GERİ DÖNÜŞ YOK
-    # -------------------------------------------------
-    for attempt in range(len(GEMINI_API_KEYS)):
+    # 🔁 KEY DÖNGÜSÜ (A → F)
+    for _ in range(len(GEMINI_API_KEYS)):
         key = await get_next_gemini_key()
-        print(f"🔑 Kullanılan Gemini Key: {key[:6]}*** (deneme {attempt + 1})")
-
         try:
             async with session.post(
                 f"{GEMINI_REST_URL}?key={key}",
@@ -515,39 +486,17 @@ async def gemma_cevap_async(
                 timeout=25
             ) as resp:
 
-                print(f"📡 Gemini yanıt kodu: {resp.status}")
-
                 if resp.status == 200:
-                    print("✅ Başarılı yanıt alındı")
                     data = await resp.json()
-
-                    try:
-                        parts = data["candidates"][0]["content"]["parts"]
-                        cevap = parts[0]["text"].strip()
-                        print("🧠 Model cevabı başarıyla çözüldü")
-                        return cevap
-                    except Exception as e:
-                        print(f"❌ Yanıt parse hatası: {e}")
-                        continue
+                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
                 elif resp.status == 429:
-                    print(f"⚠️ LIMIT DOLU → key atlandı: {key[:6]}***")
                     continue
-
-                else:
-                    error_text = await resp.text()
-                    print(f"❌ Gemini API HATA ({resp.status}): {error_text}")
-                    continue
-
-        except Exception as e:
-            print(f"❌ Gemini istek hatası → key atlandı: {e}")
+        except:
             continue
 
-    # -------------------------
-    # 🚫 Tüm keyler tükendi
-    # -------------------------
-    print("🚫 TÜM GEMINI KEYLERİ LIMITTE / HATALI")
-    return "⚠️ Şu an tüm API anahtarları dolu. Lütfen biraz sonra tekrar dene."
+    return "⚠️ Şu an tüm API anahtarları dolu."
+
 
 # ------------------------------
 # API ROUTE'LARI
@@ -582,56 +531,41 @@ async def send_notification():
 
 # app.py içindeki /chat endpoint'ini veya ilgili fonksiyonu şu şekilde güncelle:
 
-@app.route('/api/chat', methods=['POST'])
+@app.route("/api/chat", methods=["POST"])
 async def chat():
     data = await request.get_json()
-    user_id = data.get("userId")
-    chat_id = data.get("currentChat")
+
+    user_id = data.get("userId", "anon")
+    chat_id = data.get("currentChat", "default")
     user_message = data.get("message", "")
-    image_base64 = data.get("image") 
-    
-    # ... (mevcut limit ve geçmiş kontrolleri) ...
+    image_base64 = data.get("image")
 
-    try:
-        # Gemini içeriğini hazırla
-        contents = []
-        
-        # Eğer görsel varsa ekle
-        if image_base64:
-            contents.append({
-                "role": "user",
-                "parts": [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": image_base64}},
-                    {"text": user_message if user_message else "Bu görseli analiz et."}
-                ]
-            })
-        else:
-            # Görsel yoksa normal metin devam et
-            contents.append({
-                "role": "user",
-                "parts": [{"text": user_message}]
-            })
+    # 🧠 HAFIZA
+    user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
+    chat_history = user_chats.setdefault(chat_id, [])
 
-        # Gemini Model Çağrısı
-        # Not: app.py'de kullandığın kütüphane versiyonuna göre model çağrısını güncellemelisin.
-        # GenAI (yeni versiyon) için örnek:
-        response = await gemini_client.aio.models.generate_content(
-            model=GEMINI_MODEL_NAME,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=get_system_prompt(),
-                temperature=0.7
-            )
-        )
+    # LİMİT
+    if not await check_daily_limit(user_id):
+        return jsonify({"response": "⚠️ Günlük limit doldu."})
 
-        return jsonify({
-            "response": response.text,
-            "status": "success"
-        })
+    # AI CEVABI
+    response_text = await gemma_cevap_async(
+        message=user_message,
+        conversation=chat_history,
+        session=session,
+        user_name=user_id,
+        image_data=image_base64
+    )
 
-    except Exception as e:
-        print(f"Hata: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+    # 🧠 HAFIZAYA YAZ
+    chat_history.append({"sender": "user", "message": user_message})
+    chat_history.append({"sender": "nova", "message": response_text})
+    DIRTY_FLAGS["history"] = True
+
+    return jsonify({
+        "response": response_text,
+        "status": "success"
+    })
 
 @app.route("/api/history")
 async def history():
@@ -662,58 +596,61 @@ async def home():
 @app.websocket("/ws/chat")
 async def ws_chat_handler():
     await websocket.accept()
-    
-    # GenAI veya Client yoksa kapat
-    if not GENAI_AVAILABLE or not gemini_client:
-        await websocket.send("HATA: AI Motoru (Client/Library) aktif değil.")
-        return
 
-    try:
-        while True:
-            data = await websocket.receive()
-            try:
-                msg_data = json.loads(data)
-            except:
-                continue # JSON hatalıysa döngüye devam
+    while True:
+        data = await websocket.receive()
+        try:
+            msg = json.loads(data)
+        except:
+            continue
 
-            user_msg = msg_data.get("message", "")
-            img_b64 = msg_data.get("image_data")
-            audio_b64 = msg_data.get("audio_data")
+        user_id = msg.get("userId", "anon")
+        chat_id = msg.get("chatId", "live")
+        user_message = msg.get("message", "")
 
-            gemini_contents = []
-            if user_msg: gemini_contents.append(user_msg)
-            
-            # types.Part kullanımı için try-except ekledik
-            try:
-                if img_b64:
-                    if "," in img_b64: _, img_b64 = img_b64.split(",", 1)
-                    gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(img_b64), mime_type="image/jpeg"))
-                if audio_b64:
-                    if "," in audio_b64: _, audio_b64 = audio_b64.split(",", 1)
-                    gemini_contents.append(types.Part.from_bytes(data=base64.b64decode(audio_b64), mime_type="audio/webm"))
-            except Exception as e:
-                await websocket.send(f"Medya işleme hatası: {str(e)}")
-                continue
+        # 🧠 HAFIZA
+        user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
+        chat_history = user_chats.setdefault(chat_id, [])
 
-            if not gemini_contents:
-                continue
+        # SON 6 MESAJ
+        contents = []
+        for m in chat_history[-6:]:
+            contents.append({
+                "role": "user" if m["sender"] == "user" else "model",
+                "parts": [{"text": m["message"]}]
+            })
 
-            try:
-                response_stream = await gemini_client.aio.models.generate_content_stream(
-                    model=GEMINI_MODEL_NAME, # Model değişkeni kullanıldı
-                    contents=gemini_contents,
-                    config=types.GenerateContentConfig(system_instruction=get_system_prompt(), temperature=0.7)
+        contents.append({
+            "role": "user",
+            "parts": [{"text": user_message}]
+        })
+
+        try:
+            stream = await gemini_client.aio.models.generate_content_stream(
+                model=GEMINI_MODEL_NAME,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=get_system_prompt(),
+                    temperature=0.7
                 )
-                async for chunk in response_stream:
-                    if chunk.text: await websocket.send(chunk.text)
-                await websocket.send("[END_OF_STREAM]")
-            except Exception as e:
-                await websocket.send(f"HATA: {str(e)}")
-                
-    except asyncio.CancelledError:
-        pass # Bağlantı koptu
-    except Exception as e:
-        print(f"WS Error: {e}")
+            )
+
+            full_response = ""
+
+            async for chunk in stream:
+                if chunk.text:
+                    full_response += chunk.text
+                    await websocket.send(chunk.text)
+
+            await websocket.send("[END]")
+
+            # 🧠 HAFIZAYA YAZ
+            chat_history.append({"sender": "user", "message": user_message})
+            chat_history.append({"sender": "nova", "message": full_response})
+            DIRTY_FLAGS["history"] = True
+
+        except Exception as e:
+            await websocket.send(f"HATA: {str(e)}")
 
 async def keep_alive():
     url = "https://nova-chat-d50f.onrender.com" 
