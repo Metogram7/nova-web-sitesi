@@ -146,7 +146,7 @@ async def get_next_gemini_key():
     
 # Boş anahtarları temizle
 GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]
-
+print(f"✅ Gemini Key Sistemi Başlatıldı | Toplam Key: {len(GEMINI_API_KEYS)}")
 DISABLED_KEYS = {} 
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -372,20 +372,41 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 # Model endpoint URL'si (Değişkenleştirildi)
 GEMINI_REST_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent"
 
-async def gemma_cevap_async(message, conversation, session, user_name=None, image_data=None):
+async def gemma_cevap_async(
+    message,
+    conversation,
+    session,
+    user_name=None,
+    image_data=None
+):
+    print("🟢 gemma_cevap_async çağrıldı")
+
     if not GEMINI_API_KEYS:
+        print("❌ GEMINI_API_KEYS boş")
         return "⚠️ API anahtarı eksik."
 
+    # -------------------------
+    # 🌍 Gerekirse canlı arama
+    # -------------------------
     live_context = ""
-    if await should_search_internet(message, session):
-        search_query = f"{message} {get_nova_date()}"
-        search_results = await fetch_live_data(search_query)
-        live_context = (
-            "\n\n[ARAMA SONUÇLARI]:\n"
-            f"{search_results}\n\n"
-            "Talimat: Yukarıdaki sonuçlar günceldir, bunları kullanarak direkt cevap ver."
-        )
+    try:
+        if await should_search_internet(message, session):
+            print("🌐 İnternetten arama yapılacak")
+            search_query = f"{message} {get_nova_date()}"
+            search_results = await fetch_live_data(search_query)
+            live_context = (
+                "\n\n[ARAMA SONUÇLARI]:\n"
+                f"{search_results}\n\n"
+                "Talimat: Yukarıdaki sonuçlar günceldir, bunları kullanarak direkt cevap ver."
+            )
+        else:
+            print("ℹ️ İnternet araması gerekmedi")
+    except Exception as e:
+        print(f"⚠️ Arama hatası (devam ediliyor): {e}")
 
+    # -------------------------
+    # 🧠 Son konuşma geçmişi
+    # -------------------------
     recent_history = conversation[-6:]
     contents = []
 
@@ -395,11 +416,18 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
             "parts": [{"text": msg["message"]}]
         })
 
-    user_parts = [{"text": f"{user_name or 'Kullanıcı'}: {message}{live_context}"}]
+    # -------------------------
+    # 👤 Kullanıcı mesajı
+    # -------------------------
+    user_parts = [{
+        "text": f"{user_name or 'Kullanıcı'}: {message}{live_context}"
+    }]
 
     if image_data:
+        print("🖼️ Görsel veri eklendi")
         if "," in image_data:
             _, image_data = image_data.split(",", 1)
+
         user_parts.append({
             "inline_data": {
                 "mime_type": "image/jpeg",
@@ -412,6 +440,9 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
         "parts": user_parts
     })
 
+    # -------------------------
+    # 📦 Payload
+    # -------------------------
     payload = {
         "contents": contents,
         "system_instruction": {
@@ -423,9 +454,17 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
         }
     }
 
-    # 🔁 A → F → A (SADECE HATA OLURSA GEÇER)
-    for _ in range(len(GEMINI_API_KEYS)):
+    print("📦 Payload hazırlandı")
+
+    # -------------------------------------------------
+    # 🔁 KEY DÖNGÜSÜ
+    # A → B → C → D → E → F
+    # ❗ SADECE HATA OLURSA GEÇER
+    # ❗ GERİ DÖNÜŞ YOK
+    # -------------------------------------------------
+    for attempt in range(len(GEMINI_API_KEYS)):
         key = await get_next_gemini_key()
+        print(f"🔑 Kullanılan Gemini Key: {key[:6]}*** (deneme {attempt + 1})")
 
         try:
             async with session.post(
@@ -434,24 +473,39 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
                 timeout=25
             ) as resp:
 
+                print(f"📡 Gemini yanıt kodu: {resp.status}")
+
                 if resp.status == 200:
+                    print("✅ Başarılı yanıt alındı")
                     data = await resp.json()
-                    parts = data["candidates"][0]["content"]["parts"]
-                    return parts[0]["text"].strip()
+
+                    try:
+                        parts = data["candidates"][0]["content"]["parts"]
+                        cevap = parts[0]["text"].strip()
+                        print("🧠 Model cevabı başarıyla çözüldü")
+                        return cevap
+                    except Exception as e:
+                        print(f"❌ Yanıt parse hatası: {e}")
+                        continue
 
                 elif resp.status == 429:
-                    print(f"⚠️ Gemini key limiti dolu → geçiliyor: {key[:6]}***")
+                    print(f"⚠️ LIMIT DOLU → key atlandı: {key[:6]}***")
                     continue
 
                 else:
                     error_text = await resp.text()
-                    print(f"❌ Gemini API Hata ({resp.status}): {error_text}")
+                    print(f"❌ Gemini API HATA ({resp.status}): {error_text}")
+                    continue
 
         except Exception as e:
-            print(f"❌ Gemini request hatası, key atlandı: {e}")
+            print(f"❌ Gemini istek hatası → key atlandı: {e}")
             continue
 
-    return "⚠️ Şu an tüm API anahtarları limitte. Lütfen biraz sonra tekrar dene."
+    # -------------------------
+    # 🚫 Tüm keyler tükendi
+    # -------------------------
+    print("🚫 TÜM GEMINI KEYLERİ LIMITTE / HATALI")
+    return "⚠️ Şu an tüm API anahtarları dolu. Lütfen biraz sonra tekrar dene."
 
 # ------------------------------
 # API ROUTE'LARI
