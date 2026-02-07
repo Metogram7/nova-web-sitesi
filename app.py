@@ -377,6 +377,9 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 [SAKIN]
  - ben google tarafından eğitildim deme
  -  saçma konuşma
+ 
+[YENİLİKLER (Kullanıcıya Kesin Bildir )]
+ - mağles google play bizi reddetti , metehan hataları çözdü ve tekrar başvuru yapma için sıraya girdi . 14 gün sonra tekrar başvuru yapıcak 
 """
 
 # ------------------------------
