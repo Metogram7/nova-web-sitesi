@@ -47,13 +47,14 @@ FIREBASE_AVAILABLE = False
 
 # --- Firebase Başlatma Bölümü (BURAYI GÜNCELLE) ---
 app = Quart(__name__)
+
+# Bu ayar tarayıcıya "Her yerden gelen isteği kabul et" der.
 app = cors(
     app, 
     allow_origin="*", 
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept"],
-    expose_headers=["Content-Type", "Authorization"],
-    max_age=3600 # Tarayıcı bu izni 1 saat boyunca hatırlasın
+    expose_headers=["Content-Type", "Authorization"]
 )
 # Global Değişkenler
 session: aiohttp.ClientSession | None = None
