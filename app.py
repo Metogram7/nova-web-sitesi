@@ -52,7 +52,8 @@ app = cors(
     allow_origin="*", 
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept"],
-    expose_headers=["Content-Type", "Authorization"]
+    expose_headers=["Content-Type", "Authorization"],
+    max_age=3600 # Tarayıcı bu izni 1 saat boyunca hatırlasın
 )
 # Global Değişkenler
 session: aiohttp.ClientSession | None = None
