@@ -77,12 +77,7 @@ except Exception as e:
     FIREBASE_AVAILABLE = False
     print(f"❌ Firebase Başlatma Hatası: {e}")
 app = Quart(__name__)
-app = cors(app, allow_origin=[
-    "https://novawebb.com", 
-    "http://127.0.0.1:5500", 
-    "http://127.0.0.1:5502" # <-- Bu satırın olduğundan emin ol!
-])
-
+app = cors(app, allow_origin="*") 
 # Global Değişkenler
 session: aiohttp.ClientSession | None = None
 gemini_client = None 
