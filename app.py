@@ -192,7 +192,7 @@ async def should_search_internet(message: str, session: aiohttp.ClientSession):
         return False
 
     # Hızlı Kelime Kontrolü (Daha zengin liste)
-    fast_triggers = ["dolar", "euro", "hava", "saat", "kimdir", "nedir", "skor", "maçı", "haber", "borsa", "altın", "fiyatı", "vizyondaki", "Fenerbahçe", "Galatasaray", "Maç", "Beşiktaş", "ee son", "bu hafta"]
+    fast_triggers = ["dolar", "euro", "hava", "saat", "kimdir", "nedir", "skor", "maçı", "haber", "borsa", "altın", "fiyatı", "vizyondaki", "Fenerbahçe", "Galatasaray", "Maç", "Beşiktaş", "ee son", "bu hafta", "kaç"]
     if any(word in message.lower() for word in fast_triggers):
         return True
 
