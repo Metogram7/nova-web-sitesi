@@ -133,86 +133,64 @@ GEMINI_MODEL_NAME = "gemini-2.5-flash"
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
 # ------------------------------------
-
 async def fetch_live_data(query: str):
-    """Google CSE - Çok katmanlı (Haber + Genel) arama motoru."""
+    """Google CSE - Geliştirilmiş Dinamik Arama Motoru."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return "⚠️ İnternet arama yapılandırması (API_KEY veya CSE_ID) eksik."
+        return "⚠️ İnternet arama yapılandırması eksik."
         
     url = "https://www.googleapis.com/customsearch/v1"
-    
-    # Varsayılan Parametreler
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
         "q": query,
         "lr": "lang_tr",
-        "gl": "tr",
-        "num": 5,
+        "num": 4, # 4 sonuç idealdir
         "safe": "active"
     }
     
     try:
+        # Ana session kullanılıyor (startup'ta oluşturduğunuz)
+        # Eğer session yoksa hata vermemesi için kontrol
         async with aiohttp.ClientSession() as search_session:
-            # --- ADIM 1: GÜNCEL ARAMA (Son 1 Hafta) ---
-            # Önce son dakika/güncel veri var mı diye bakarız.
-            params["dateRestrict"] = "w1"
-            
-            items = []
+            # ÖNCE: Çok güncel veri ara (Son 2 gün - Döviz/Haber için)
+            params["dateRestrict"] = "d2"
             async with search_session.get(url, params=params, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    items = data.get("items", [])
-                else:
-                    print(f"🔍 Güncel arama başarısız (Kod: {resp.status})")
-                
-            # --- ADIM 2: GENEL ARAMA (Fallback) ---
-            # Eğer güncel (w1) arama boş dönerse, kısıtlamayı kaldırıp tekrar ararız.
-            if not items:
-                print(f"🔍 Güncel veri yok, genel arama yapılıyor: {query}")
-                params.pop("dateRestrict", None)  # Tarih kısıtlamasını kaldır
-                
-                async with search_session.get(url, params=params, timeout=10) as resp_fallback:
-                    if resp_fallback.status == 200:
-                        data = await resp_fallback.json()
-                        items = data.get("items", [])
+                data = await resp.json()
+                items = data.get("items", [])
 
-            # --- SONUÇ İŞLEME ---
+            # EĞER SONUÇ YOKSA: Genel aramaya dön
             if not items:
-                return "⚠️ İnternet araması yapıldı ancak sonuç dönmedi."
+                params.pop("dateRestrict", None)
+                async with search_session.get(url, params=params, timeout=10) as resp_fallback:
+                    data = await resp_fallback.json()
+                    items = data.get("items", [])
+
+            if not items:
+                return "İnternette güncel bilgi bulunamadı."
             
             results = []
             for i, item in enumerate(items, 1):
                 title = item.get('title', 'Başlık Yok')
-                snippet = item.get('snippet', 'İçerik özeti bulunamadı.')
-                link = item.get('link', '')
-                results.append(f"📌 {i}. {title}\n📝 {snippet}\n🔗 {link}")
+                snippet = item.get('snippet', 'Özet yok.')
+                results.append(f"Kaynak {i}: {title} - {snippet}")
             
-            return "\n\n".join(results)
+            return "\n".join(results)
             
     except Exception as e:
-        return f"⚠️ Arama motoru teknik hatası: {str(e)}"
-
+        return f"Arama hatası: {str(e)}"
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
-    """Mesajın internet araması gerektirip gerektirmediğini analiz eder."""
-    if not GEMINI_API_KEYS:
-        return False
-
-    # Bu kelimeler varsa KESİN ara
-    fast_triggers = [
-        "dolar", "euro", "hava", "saat", "kimdir", "nedir", 
-        "skor", "maçı", "haber", "borsa", "altın", "fiyat", 
-        "vizyon", "son dakika", "bugün", "kaç", "nerede", "hangi"
+    msg = message.lower()
+    # Fiyat ve ekonomi odaklı tetikleyiciler
+    triggers = [
+        "dolar", "euro", "hava", "saat", "kimdir", "nedir", "neler oldu",
+        "skor", "maçı", "haber", "borsa", "altın", "fiyat", "vizyon",
+        "son dakika", "bugün", "kaç", "nerede", "hangi", "güncel", "en son"
     ]
-    if any(word in message.lower() for word in fast_triggers):
-        return True
     
-    # Soru işareti varsa yine ara (Daha agresif olması için)
-    if "?" in message:
+    
+    if any(word in msg for word in triggers) or "?" in msg:
         return True
-
     return False
-
 # ------------------------------------
 # LİMİT KONTROL FONKSİYONU
 # ------------------------------------
@@ -340,6 +318,7 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 - Emojileri yerinde ve doğal kullan 😄🚀
 - Robotik değil, insan gibi doğal konuş.
 - Asla soğuk veya kısa kesilmiş cevaplar verme.
+- Çok fazla yazılım dili ile çalışıyorsun
 
 [GÖREVLERİN]
 - Kullanıcının her türlü sorusuna (kodlama, genel kültür, analiz vb.) en iyi şekilde cevap ver.
@@ -351,6 +330,11 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 - Python, JS, HTML, CSS ve diğer tüm dillere hakimsin.
 - Kod bloklarını her zaman ```dil ... ``` formatında ver.
 
+[KESİN KURALLAR]
+1. Eğer sana <GÜNCEL_İNTERNET_BİLGİSİ> etiketi içinde veri gelmişse, "bilmiyorum" veya "verilerimde yok" demen YASAKTIR.
+2. İnternet verisi gelmişse, bu veriyi kendi bilginmiş gibi samimi bir dille aktar.
+3. Dolar, borsa gibi konularda "İnternet taramama göre şu an dolar X TL civarında..." diyerek söze başla.
+4. Kullanıcıyla etkileşime gir (Örn: "Dolar çok hareketli, sence nereye gider?" gibi sorular sor).
 [ÖNEMLİ]
 - Politik, cinsiyetçi veya nefret söylemi içeren konularda tarafsız ve güvenli kal.
 - Kullanıcıya her zaman motive edici bir dille yaklaş.
@@ -374,18 +358,22 @@ async def gemma_cevap_async(
 
     # 🌍 Canlı arama
     live_context = ""
+# gemma_cevap_async içindeki live_context kısmını şöyle güncelle:
     if await should_search_internet(message, session):
-        print(f"🔍 Arama yapılıyor: {message}")
+        print(f"🔍 Canlı veri çekiliyor: {message}")
         search_results = await fetch_live_data(message)
-        live_context = (
-            f"\n\n[SİSTEM: İNTERNETTEN GELEN GÜNCEL VERİLER]\n"
-            f"{search_results}\n"
-            f"[TALİMAT]: Yukarıdaki güncel verileri kullanarak cevap ver."
-        )
-
-    # 🧠 SON 8 MESAJ
-    recent_history = conversation[-8:]
-    contents = []
+        live_context = f"""
+        <GÜNCEL_İNTERNET_BİLGİSİ>
+        Arama Sonuçları:
+        {search_results}
+    
+        TALİMAT: Kullanıcıya cevap verirken yukarıdaki verileri temel al. 
+        Eğer kur bilgisi varsa doğrudan söyle. "Verilerimde yok" deme!
+        </GÜNCEL_İNTERNET_BİLGİSİ>
+        """
+        # 🧠 SON 8 MESAJ
+        recent_history = conversation[-8:]
+        contents = []
 
     for msg in recent_history:
         contents.append({
