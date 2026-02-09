@@ -47,7 +47,7 @@ FIREBASE_AVAILABLE = False
 
 app = Quart(__name__)
 
-# Bu ayar tarayıcıya "Her yerden gelen isteği kabul et" der.
+# CORS AYARLARI
 app = cors(
     app, 
     allow_origin="*", 
@@ -127,85 +127,87 @@ GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 GEMINI_MODEL_NAME = "gemini-1.5-flash" 
 
 # ------------------------------------
-# CANLI VERİ VE ANALİZ FONKSİYONLARI (FİX)
+# CANLI VERİ VE ANALİZ FONKSİYONLARI (ZENGİNLEŞTİRİLMİŞ)
 # ------------------------------------
 
 async def fetch_live_data(query: str):
-    """Google CSE - Önce güncel, bulamazsa genel arama yapar (GARANTİLİ)."""
+    """Google CSE - Çok katmanlı ve garantili arama motoru."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return "⚠️ İnternet arama yapılandırması eksik."
+        return "⚠️ İnternet arama yapılandırması (API_KEY veya CSE_ID) eksik."
         
     url = "https://www.googleapis.com/customsearch/v1"
     
-    # 1. DENEME: Son 1 HAFTA (w1) içindeki verileri ara.
-    # Bu sayede haberler, döviz, spor sonuçları taze gelir.
+    # 1. DENEME: Son 1 HAFTA (En güncel veriler)
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
         "q": query,
-        "lr": "lang_tr",        # Türkçe
-        "gl": "tr",             # Türkiye lokasyonu
-        "num": 5,               
-        "dateRestrict": "w1",   # w1 = Son 1 hafta
+        "lr": "lang_tr",
+        "gl": "tr",
+        "num": 7,              # Daha fazla sonuç çekiyoruz
+        "dateRestrict": "w1",  # Son 1 hafta
         "safe": "active"
     }
     
     try:
         async with aiohttp.ClientSession() as search_session:
             # --- ADIM 1: GÜNCEL ARAMA ---
-            async with search_session.get(url, params=params, timeout=8) as resp:
-                data = await resp.json() if resp.status == 200 else {}
-                items = data.get("items", [])
-                
-            # --- ADIM 2: FALLBACK (Eğer güncel bulamazsa genel ara) ---
-            if not items:
-                # Kısıtlamayı kaldırıyoruz
-                if "dateRestrict" in params:
-                    del params["dateRestrict"]
-                
-                async with search_session.get(url, params=params, timeout=8) as resp_fallback:
-                    data = await resp_fallback.json() if resp_fallback.status == 200 else {}
+            async with search_session.get(url, params=params, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
                     items = data.get("items", [])
-
-            # --- SONUÇ İŞLEME ---
+                else:
+                    items = []
+                    print(f"🔍 Güncel arama başarısız (Kod: {resp.status})")
+                
+            # --- ADIM 2: FALLBACK (Güncel yoksa tarihsiz ara) ---
             if not items:
-                return "⚠️ İnternette arama yapıldı ancak net bir sonuç bulunamadı."
+                print(f"🔍 Taze veri yok, genel arama yapılıyor: {query}")
+                params.pop("dateRestrict", None) # Tarih kısıtlamasını kaldır
+                async with search_session.get(url, params=params, timeout=10) as resp_fallback:
+                    if resp_fallback.status == 200:
+                        data = await resp_fallback.json()
+                        items = data.get("items", [])
+
+            # --- SONUÇ İŞLEME VE ZENGİNLEŞTİRME ---
+            if not items:
+                return "⚠️ İnternet araması yapıldı ancak sonuç dönmedi. Google CSE 'Tüm Web' ayarını kontrol et."
             
             results = []
             for i, item in enumerate(items, 1):
                 title = item.get('title', 'Başlık Yok')
-                snippet = item.get('snippet', 'Özet Yok')
+                snippet = item.get('snippet', 'İçerik özeti bulunamadı.')
                 link = item.get('link', '')
-                results.append(f"[{i}] {title}: {snippet} (Kaynak: {link})")
+                # Veriyi daha zengin hale getirelim
+                results.append(f"📌 SONUÇ {i}:\n🔹 Başlık: {title}\n📝 Bilgi: {snippet}\n🔗 Kaynak: {link}")
             
             return "\n\n".join(results)
             
     except Exception as e:
-        return f"⚠️ Arama hatası: {str(e)}"
+        return f"⚠️ Arama motoru teknik hatası: {str(e)}"
 
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
-    """Mesajın internet araması gerektirip gerektirmediğini analiz eder."""
+    """Mesajın internet araması gerektirip gerektirmediğini daha hassas analiz eder."""
     if not GEMINI_API_KEYS:
         return False
+
+    # Hızlı Kelime Kontrolü (Daha zengin liste)
+    fast_triggers = ["dolar", "euro", "hava", "saat", "kimdir", "nedir", "skor", "maçı", "haber", "borsa", "altın", "fiyatı", "vizyondaki", "Fenerbahçe", "Galatasaray", "Maç", "Beşiktaş", "ee son", "bu hafta"]
+    if any(word in message.lower() for word in fast_triggers):
+        return True
 
     analysis_prompt = {
         "contents": [{
             "role": "user",
             "parts": [{
-                "text": f"""Aşağıdaki mesaj:
-1. Güncel bir haber, spor sonucu, hava durumu, borsa/döviz bilgisi içeriyor mu?
-2. Tarihi, saati veya güncel olayları soruyor mu?
-3. Bilgi teyidi gerektiriyor mu?
-
-Eğer bunlardan HERHANGİ BİRİ 'Evet' ise sadece 'EVET' yaz.
-Yoksa 'HAYIR' yaz.
-
-Mesaj: {message}"""
+                "text": f"""Soru güncel bir olay, gerçek zamanlı veri (fiyat, hava durumu, haber) veya kesin bilgi teyidi gerektiriyor mu?
+Cevap sadece 'EVET' veya 'HAYIR' olmalı.
+Soru: {message}"""
             }]
         }],
         "generationConfig": {
             "temperature": 0,
-            "maxOutputTokens": 10
+            "maxOutputTokens": 5
         }
     }
 
@@ -215,15 +217,10 @@ Mesaj: {message}"""
         async with session.post(url, json=analysis_prompt, timeout=5) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                if "candidates" in data and data["candidates"]:
-                    content_parts = data["candidates"][0].get("content", {}).get("parts", [])
-                    if content_parts:
-                        answer = content_parts[0].get("text", "").strip().upper()
-                        # Daha agresif arama kararı:
-                        return "EVET" in answer
+                answer = data["candidates"][0]["content"]["parts"][0]["text"].strip().upper()
+                return "EVET" in answer
     except:
         pass
-    # Hata durumunda güvenli taraf: Aramayı yap
     return False
 
 # ------------------------------------
@@ -265,10 +262,6 @@ async def startup():
     global session, gemini_client
     
     timeout = aiohttp.ClientTimeout(total=45, connect=10)
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    
     connector = aiohttp.TCPConnector(ssl=False, limit=100)
     session = aiohttp.ClientSession(timeout=timeout, connector=connector, json_serialize=json.dumps)
     
@@ -423,14 +416,14 @@ async def gemma_cevap_async(
 
     # 🌍 Canlı arama
     live_context = ""
-    # "should_search" kontrolü yapılıyor
     if await should_search_internet(message, session):
+        print(f"🔍 Arama yapılıyor: {message}")
         search_results = await fetch_live_data(message)
         live_context = (
             f"\n\n[SİSTEM: İNTERNETTEN GELEN GÜNCEL VERİLER]\n"
             f"{search_results}\n"
-            f"[SİSTEM TALİMATI]: Kullanıcının sorusunu SADECE yukarıdaki güncel verileri kullanarak cevapla. "
-            f"Kendi eski bilgilerini yok say. Linkleri referans ver."
+            f"[SİSTEM TALİMATI]: Kullanıcının sorusunu yukarıdaki verileri kullanarak, Nova kimliğine uygun şekilde cevapla. "
+            f"Eğer veriler çok güncelse (borsa vb.) bunu belirt."
         )
 
     # 🧠 SON 8 MESAJ
@@ -469,7 +462,7 @@ async def gemma_cevap_async(
             "parts": [{"text": get_system_prompt()}]
         },
         "generationConfig": {
-            "temperature": 0.6,
+            "temperature": 0.7,
             "maxOutputTokens": 2048
         }
     }
@@ -491,7 +484,6 @@ async def gemma_cevap_async(
                 if resp.status == 200:
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-
                 elif resp.status == 429:
                     continue
                 else:
@@ -546,7 +538,7 @@ async def chat():
     chat_history = user_chats.setdefault(chat_id, [])
 
     if not await check_daily_limit(user_id):
-        return jsonify({"response": "⚠️ Günlük limit doldu."})
+        return jsonify({"response": "⚠️ Günlük limit doldu. Yarın görüşmek üzere! 😄"})
 
     response_text = await gemma_cevap_async(
         message=user_message,
@@ -659,10 +651,13 @@ async def keep_alive():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
+    
+    # Windows üzerinde çalışırken oluşabilecek Event Loop hatalarını önlemek için
     if os.name == 'nt':
         try:
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except:
             pass
             
+    # Quart uygulamasını başlat
     app.run(host="0.0.0.0", port=port)
