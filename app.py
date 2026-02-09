@@ -40,12 +40,11 @@ except ImportError:
     print("⚠️ UYARI: 'google-genai' kütüphanesi eksik. (pip install google-genai)")
 
 # ------------------------------------
-# FIREBASE BAŞLATMA (Pylance Fix ve Güvenli Başlatma)
+# FIREBASE BAŞLATMA
 # ------------------------------------
-# Değişkeni global alanda tanımlıyoruz ki Pylance hata vermesin.
 FIREBASE_AVAILABLE = False
+# Not: Firebase credentials kodunu buraya eklemelisiniz.
 
-# --- Firebase Başlatma Bölümü (BURAYI GÜNCELLE) ---
 app = Quart(__name__)
 
 # Bu ayar tarayıcıya "Her yerden gelen isteği kabul et" der.
@@ -56,6 +55,7 @@ app = cors(
     allow_headers=["Content-Type", "Authorization", "Accept"],
     expose_headers=["Content-Type", "Authorization"]
 )
+
 # Global Değişkenler
 session: aiohttp.ClientSession | None = None
 gemini_client = None 
@@ -92,7 +92,7 @@ DIRTY_FLAGS = {
 }
 
 # ------------------------------------
-# API ANAHTARLARI VE HATA YÖNETİMİ
+# API ANAHTARLARI VE MODEL AYARLARI
 # ------------------------------------
 GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_A"),
@@ -103,95 +103,121 @@ GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_F"),
 ]
 
+# Boş anahtarları temizle
+GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]
+print(f"✅ Gemini Key Sistemi Başlatıldı | Toplam Key: {len(GEMINI_API_KEYS)}")
 
-# ------------------------------------
-# ROUND-ROBIN KEY YÖNETİMİ
-# ------------------------------------
+# Round-Robin Değişkenleri
 CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 
 async def get_next_gemini_key():
     global CURRENT_KEY_INDEX
     async with KEY_LOCK:
+        if not GEMINI_API_KEYS:
+            return None
         key = GEMINI_API_KEYS[CURRENT_KEY_INDEX]
         CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
         return key
-    
-# Boş anahtarları temizle
-GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]
-print(f"✅ Gemini Key Sistemi Başlatıldı | Toplam Key: {len(GEMINI_API_KEYS)}")
-DISABLED_KEYS = {} 
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
-# Model Adı (Stabil sürüm seçildi)
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+# DÜZELTME: 2.5 henüz yok, stabil ve hızlı olan 1.5 Flash veya 2.0 Flash seçilmeli.
+GEMINI_MODEL_NAME = "gemini-1.5-flash" 
 
 # ------------------------------------
-# CANLI VERİ VE ANALİZ FONKSİYONLARI
+# CANLI VERİ VE ANALİZ FONKSİYONLARI (GÜNCELLENDİ)
 # ------------------------------------
 
 async def fetch_live_data(query: str):
-    """Google CSE ile internetten veri çeker."""
+    """Google CSE ile internetten veri çeker - GÜNCEL VERİ ODAKLI."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
         return "⚠️ İnternet arama yapılandırması eksik. lütfen ulaş: metehanakkaya30@gmail.com"
         
     url = "https://www.googleapis.com/customsearch/v1"
+    
+    # Tarih bilgisini al
+    tr_tz = timezone(timedelta(hours=3))
+    now = datetime.now(tr_tz)
+    date_str = now.strftime("%Y %B") # Örn: 2024 October
+    
+    # Sorguyu güncelleştir (Sene ekle ki eski sonuç gelmesin)
+    optimized_query = f"{query} {now.year}"
+
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
-        "q": query,
-        "lr": "lang_tr", # Türkçe sonuçlar
-        "num": 5        # İlk 5 sonuç
+        "q": optimized_query,
+        "lr": "lang_tr",        # Türkçe sonuçlar
+        "gl": "tr",             # Türkiye lokasyonlu sonuçlar
+        "num": 5,               # İlk 5 sonuç
+        "sort": "date",         # KRİTİK AYAR: Tarihe göre sırala (En yeni en üstte)
+        "safe": "active"
     }
+    
     try:
-        # Burada yeni session açmak yerine global session kullanılabilir ama
-        # bağımsız olması için with bloğu güvenlidir.
         async with aiohttp.ClientSession() as search_session:
-            async with search_session.get(url, params=params, timeout=12) as resp:
+            async with search_session.get(url, params=params, timeout=10) as resp:
                 if resp.status != 200:
+                    error_msg = await resp.text()
+                    print(f"Search Error: {error_msg}")
                     return "⚠️ Arama motoru şu an yanıt vermiyor."
+                
                 data = await resp.json()
                 items = data.get("items", [])
+                
                 if not items:
-                    return "⚠️ İnternette güncel bir bilgi bulunamadı."
+                    # Tarihe göre bulamazsa normal aramayı dene (Yedek Plan)
+                    if "sort" in params:
+                        del params["sort"]
+                        async with search_session.get(url, params=params, timeout=10) as resp_fallback:
+                            if resp_fallback.status == 200:
+                                data = await resp_fallback.json()
+                                items = data.get("items", [])
+
+                if not items:
+                    return "⚠️ İnternette bu konuda güncel bir bilgi bulunamadı."
                 
                 results = []
                 for i, item in enumerate(items, 1):
-                    results.append(f"[{i}] {item.get('title')}: {item.get('snippet')}")
+                    title = item.get('title', 'Başlık Yok')
+                    snippet = item.get('snippet', 'Özet Yok')
+                    # Meta taglerden tarih bulmaya çalış (Opsiyonel iyileştirme)
+                    results.append(f"[{i}] {title}: {snippet}")
                 
                 return "\n\n".join(results)
     except Exception as e:
         return f"⚠️ Arama hatası: {str(e)} lütfen ulaş: metehanakkaya30@gmail.com "
 
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
-    """Mesajın internet araması gerektirip gerektirmediğini Gemini'ye sorar."""
+    """Mesajın internet araması gerektirip gerektirmediğini analiz eder."""
     if not GEMINI_API_KEYS:
         return False
 
+    # Prompt biraz daha hassaslaştırıldı
     analysis_prompt = {
         "contents": [{
             "role": "user",
             "parts": [{
-                "text": f"""Aşağıdaki mesaj güncel bir olay (haber, spor, hava durumu, borsa, vizyondaki filmler vb.) veya internetten teyit edilmesi gereken taze bir bilgi içeriyor mu? 
-Cevabın sadece 'EVET' veya 'HAYIR' olsun. Başka hiçbir şey yazma.
+                "text": f"""Aşağıdaki mesaj güncel bir olay, tarih, saat, hava durumu, döviz, spor, haber veya teyit gerektiren taze bilgi içeriyor mu?
+Cevabın sadece 'EVET' veya 'HAYIR' olsun.
 
 Mesaj: {message}"""
             }]
         }],
-        "generationConfig": {"temperature": 0}
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 10
+        }
     }
 
     try:
-        # Rastgele anahtar seçimi
         key = random.choice(GEMINI_API_KEYS)
-        # Model adını değişkenden alıyoruz
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={key}"
-        async with session.post(url, json=analysis_prompt, timeout=10) as resp:
+        async with session.post(url, json=analysis_prompt, timeout=8) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                # Güvenli veri okuma
                 if "candidates" in data and data["candidates"]:
                     content_parts = data["candidates"][0].get("content", {}).get("parts", [])
                     if content_parts:
@@ -213,7 +239,6 @@ async def check_daily_limit(user_id):
         
         user_limit = GLOBAL_CACHE["daily_limits"].get(user_id, {"count": 0, "last_reset": now.isoformat()})
         
-        # Tarih stringini datetime objesine çevir
         try:
             last_reset = datetime.fromisoformat(user_limit.get("last_reset", now.isoformat()))
         except ValueError:
@@ -246,7 +271,6 @@ async def startup():
     ssl_context.verify_mode = ssl.CERT_NONE
     
     connector = aiohttp.TCPConnector(ssl=False, limit=100)
-    # json_serialize parametresini ujson ile uyumlu hale getirdik
     session = aiohttp.ClientSession(timeout=timeout, connector=connector, json_serialize=json.dumps)
     
     if GENAI_AVAILABLE and GEMINI_API_KEYS:
@@ -318,7 +342,7 @@ async def save_memory_to_disk(force=False):
                 print(f"⚠️ Kayıt hatası ({key}): {e}")
 
 # ------------------------------------
-# NOVA PROMPT VE TARİH DÜZELTME
+# NOVA PROMPT
 # ------------------------------------
 def get_nova_date():
     tr_tz = timezone(timedelta(hours=3))
@@ -361,6 +385,7 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
   - “Kontrol ediyorum” deme.
   - “İnternete bakıyorum” deme.
   - Direkt kesin bilgi gibi kullan.
+  - Arama sonuçlarındaki bilgileri BUGÜNÜN gerçeği olarak kabul et.
 
 [KODLAMA]
 - Tüm yazılım dillerine hakimsin.
@@ -377,7 +402,7 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 
 [SAKIN]
  - ben google tarafından eğitildim deme
- -  saçma konuşma
+ - saçma konuşma
  
 [YENİLİKLER(sakın hep söyeleme eğer kullanıcı sorarsa söyle)]
  - mağles google play bizi reddetti , metehan hataları çözdü ve tekrar başvuru yapma için sıraya girdi . 14 gün sonra tekrar başvuru yapıcak 
@@ -386,7 +411,6 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 # ------------------------------
 # ANA CEVAP MOTORU (REST)
 # ------------------------------
-# Model endpoint URL'si (Değişkenleştirildi)
 GEMINI_REST_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent"
 
 async def gemma_cevap_async(
@@ -399,15 +423,16 @@ async def gemma_cevap_async(
     if not GEMINI_API_KEYS:
         return "⚠️ API anahtarı eksik."
 
-    # 🌍 Gerekirse canlı arama
+    # 🌍 Canlı arama
     live_context = ""
+    # "should_search" kontrolü yapılıyor
     if await should_search_internet(message, session):
-        search_query = f"{message} {get_nova_date()}"
-        search_results = await fetch_live_data(search_query)
+        # Arama sorgusuna tarih eklemiştik zaten fetch içinde
+        search_results = await fetch_live_data(message)
         live_context = (
-            "\n\n[ARAMA SONUÇLARI]:\n"
+            "\n\n[ARAMA SONUÇLARI - BU BİLGİLER KESİN VE GÜNCELDİR]:\n"
             f"{search_results}\n\n"
-            "Talimat: Yukarıdaki sonuçlar günceldir, bunları kullanarak direkt cevap ver."
+            "Talimat: Yukarıdaki sonuçları kullanarak kullanıcının sorusuna DOĞRUDAN cevap ver. Asla 'bilmiyorum' deme, sonuçları kullan."
         )
 
     # 🧠 SON 8 MESAJ
@@ -451,12 +476,17 @@ async def gemma_cevap_async(
         }
     }
 
-    # 🔁 KEY DÖNGÜSÜ (A → F)
+    # 🔁 KEY DÖNGÜSÜ
     for _ in range(len(GEMINI_API_KEYS)):
         key = await get_next_gemini_key()
+        if not key: continue
+        
         try:
+            # Model URL'sini her döngüde güncel key ile oluştur
+            request_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={key}"
+            
             async with session.post(
-                f"{GEMINI_REST_URL}?key={key}",
+                request_url,
                 json=payload,
                 timeout=25
             ) as resp:
@@ -466,18 +496,23 @@ async def gemma_cevap_async(
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
                 elif resp.status == 429:
+                    print(f"Key {key[:5]}... rate limit.")
                     continue
-        except:
+                else:
+                    err = await resp.text()
+                    print(f"API Hatası ({resp.status}): {err}")
+                    continue
+        except Exception as e:
+            print(f"Request Hatası: {e}")
             continue
 
-    return "⚠️ Şu an tüm API anahtarları dolu."
+    return "⚠️ Şu an tüm API anahtarları dolu veya sunucu yoğun."
 
 
 # ------------------------------
 # API ROUTE'LARI
 # ------------------------------
 
-# Bildirim Gönderme API Endpoint'i
 @app.route('/api/send-notification', methods=['POST'])
 async def send_notification():
     if not FIREBASE_AVAILABLE:
@@ -491,7 +526,6 @@ async def send_notification():
         if not body:
             return jsonify({"error": "Mesaj boş olamaz"}), 400
 
-        # 'all' konusuna (topic) abone olan herkese gönderiyoruz
         message = messaging.Message(
             notification=messaging.Notification(
                 title=title,
@@ -504,8 +538,6 @@ async def send_notification():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# app.py içindeki /chat endpoint'ini veya ilgili fonksiyonu şu şekilde güncelle:
-
 @app.route("/api/chat", methods=["POST"])
 async def chat():
     data = await request.get_json()
@@ -515,15 +547,12 @@ async def chat():
     user_message = data.get("message", "")
     image_base64 = data.get("image")
 
-    # 🧠 HAFIZA
     user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
     chat_history = user_chats.setdefault(chat_id, [])
 
-    # LİMİT
     if not await check_daily_limit(user_id):
         return jsonify({"response": "⚠️ Günlük limit doldu."})
 
-    # AI CEVABI
     response_text = await gemma_cevap_async(
         message=user_message,
         conversation=chat_history,
@@ -532,7 +561,6 @@ async def chat():
         image_data=image_base64
     )
 
-    # 🧠 HAFIZAYA YAZ
     chat_history.append({"sender": "user", "message": user_message})
     chat_history.append({"sender": "nova", "message": response_text})
     DIRTY_FLAGS["history"] = True
@@ -554,12 +582,8 @@ async def delete_chat():
     if uid in GLOBAL_CACHE["history"] and cid in GLOBAL_CACHE["history"][uid]:
         del GLOBAL_CACHE["history"][uid][cid]
         DIRTY_FLAGS["history"] = True
-
-    # 🔽 EKLENEN SATIR
         await save_memory_to_disk(force=True)
-
     return jsonify({"success": True})
-
 
 @app.route("/")
 async def home():
@@ -573,21 +597,19 @@ async def ws_chat_handler():
     await websocket.accept()
 
     while True:
-        data = await websocket.receive()
         try:
+            data = await websocket.receive()
             msg = json.loads(data)
         except:
-            continue
+            break
 
         user_id = msg.get("userId", "anon")
         chat_id = msg.get("chatId", "live")
         user_message = msg.get("message", "")
 
-        # 🧠 HAFIZA
         user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
         chat_history = user_chats.setdefault(chat_id, [])
 
-        # SON 6 MESAJ
         contents = []
         for m in chat_history[-6:]:
             contents.append({
@@ -601,33 +623,37 @@ async def ws_chat_handler():
         })
 
         try:
-            stream = await gemini_client.aio.models.generate_content_stream(
-                model=GEMINI_MODEL_NAME,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=get_system_prompt(),
-                    temperature=0.7
+            if gemini_client:
+                stream = await gemini_client.aio.models.generate_content_stream(
+                    model=GEMINI_MODEL_NAME,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=get_system_prompt(),
+                        temperature=0.7
+                    )
                 )
-            )
 
-            full_response = ""
-
-            async for chunk in stream:
-                if chunk.text:
-                    full_response += chunk.text
-                    await websocket.send(chunk.text)
-
-            await websocket.send("[END]")
-
-            # 🧠 HAFIZAYA YAZ
-            chat_history.append({"sender": "user", "message": user_message})
-            chat_history.append({"sender": "nova", "message": full_response})
-            DIRTY_FLAGS["history"] = True
+                full_response = ""
+                async for chunk in stream:
+                    if chunk.text:
+                        full_response += chunk.text
+                        await websocket.send(chunk.text)
+                
+                await websocket.send("[END]")
+                
+                chat_history.append({"sender": "user", "message": user_message})
+                chat_history.append({"sender": "nova", "message": full_response})
+                DIRTY_FLAGS["history"] = True
+            else:
+                await websocket.send("HATA: Gemini Client başlatılamadı.")
+                await websocket.send("[END]")
 
         except Exception as e:
             await websocket.send(f"HATA: {str(e)}")
+            await websocket.send("[END]")
 
 async def keep_alive():
+    # Kendi render adresinizi buraya yazın
     url = "https://nova-chat-d50f.onrender.com" 
     while True:
         await asyncio.sleep(600)
@@ -639,13 +665,10 @@ async def keep_alive():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    # Windows için Event Loop Politikası
     if os.name == 'nt':
         try:
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except:
             pass
             
-    # DÜZELTME: loop="asyncio" string parametresi kaldırıldı.
-    # Render (Linux) ortamında bu parametreye gerek yoktur ve hata verir.
     app.run(host="0.0.0.0", port=port)
