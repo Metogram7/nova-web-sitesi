@@ -6,6 +6,7 @@ import traceback
 import ssl
 import uuid
 import base64
+import sys
 from datetime import datetime, timezone, timedelta
 from quart import Quart, request, jsonify, send_file, websocket
 from quart_cors import cors
@@ -129,6 +130,7 @@ GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 # Model Adı (İSTEDİĞİN GİBİ SABİTLENDİ)
 GEMINI_MODEL_NAME = "gemini-2.5-flash" 
+# Not: 2.5 henüz stabil genel erişimde olmayabilir, kod içinde fallback mekanizması var.
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
@@ -144,13 +146,12 @@ async def fetch_live_data(query: str):
         "cx": GOOGLE_CSE_ID,
         "q": query,
         "lr": "lang_tr",
-        "num": 4, # 4 sonuç idealdir
+        "num": 5, # Sonuç sayısı 5'e çıkarıldı, daha fazla veri için.
         "safe": "active"
     }
     
     try:
-        # Ana session kullanılıyor (startup'ta oluşturduğunuz)
-        # Eğer session yoksa hata vermemesi için kontrol
+        # Yeni bir session açarak izole istek atıyoruz
         async with aiohttp.ClientSession() as search_session:
             # ÖNCE: Çok güncel veri ara (Son 2 gün - Döviz/Haber için)
             params["dateRestrict"] = "d2"
@@ -158,7 +159,7 @@ async def fetch_live_data(query: str):
                 data = await resp.json()
                 items = data.get("items", [])
 
-            # EĞER SONUÇ YOKSA: Genel aramaya dön
+            # EĞER SONUÇ YOKSA: Genel aramaya dön (Tarih kısıtlamasını kaldır)
             if not items:
                 params.pop("dateRestrict", None)
                 async with search_session.get(url, params=params, timeout=10) as resp_fallback:
@@ -166,31 +167,66 @@ async def fetch_live_data(query: str):
                     items = data.get("items", [])
 
             if not items:
-                return "İnternette güncel bilgi bulunamadı."
+                return "İnternette güncel bilgi bulunamadı ancak genel bilgimle cevaplayacağım."
             
             results = []
             for i, item in enumerate(items, 1):
                 title = item.get('title', 'Başlık Yok')
                 snippet = item.get('snippet', 'Özet yok.')
-                results.append(f"Kaynak {i}: {title} - {snippet}")
+                link = item.get('link', '')
+                results.append(f"Kaynak {i}: {title} - {snippet} (Link: {link})")
             
             return "\n".join(results)
             
     except Exception as e:
         return f"Arama hatası: {str(e)}"
+
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
-    msg = message.lower()
-    # Fiyat ve ekonomi odaklı tetikleyiciler
-    triggers = [
-        "dolar", "euro", "hava", "saat", "kimdir", "nedir", "neler oldu",
-        "skor", "maçı", "haber", "borsa", "altın", "fiyat", "vizyon",
-        "son dakika", "bugün", "kaç", "nerede", "hangi", "güncel", "en son"
+    msg = message.lower().strip()
+    
+    # %111 ZORUNLULUK: Çok kısa selamlamalar hariç neredeyse her şeyi ara.
+    if len(msg) < 4 and msg in ["selam", "merhaba", "slm", "hi", "naber"]:
+        return False
+
+    # ❓ SORU BELİRTİLERİ
+    question_patterns = [
+        "?", "nedir", "kimdir", "neredir", "nasıl",
+        "neden", "ne zaman", "hangi", "kaç",
+        "bağlıdır", "ait", "ilgili", "hakkında",
+        "fiyat", "ücret", "dolar", "euro", "altın", "borsa",
+        "hava", "durumu", "maç", "skor", "kim kazandı"
     ]
-    
-    
-    if any(word in msg for word in triggers) or "?" in msg:
+
+    # 🧠 BİLGİ / AÇIKLAMA TALEBİ
+    knowledge_patterns = [
+        "açıkla", "anlat", "bilgi ver",
+        "detay", "özeti", "tarihçesi", "yap", "yaz", "kod"
+    ]
+
+    # 🌍 YER / KONU / VARLIK
+    entity_patterns = [
+        "köy", "koy", "şehir", "il", "ilçe",
+        "ülke", "mahalle",
+        "firma", "şirket",
+        "kişi", "insan",
+        "yasası", "kanunu", "yönetmelik"
+    ]
+
+    if any(p in msg for p in question_patterns):
         return True
+
+    if any(p in msg for p in knowledge_patterns):
+        return True
+
+    if any(p in msg for p in entity_patterns):
+        return True
+
+    # Varsayılan: Eğer cümle içinde boşluk varsa (2 kelimeyse) kesinlikle ara.
+    if " " in msg:
+        return True
+        
     return False
+
 # ------------------------------------
 # LİMİT KONTROL FONKSİYONU
 # ------------------------------------
@@ -212,8 +248,6 @@ async def check_daily_limit(user_id):
             user_limit = {"count": 0, "last_reset": now.isoformat()}
         
         if user_limit["count"] >= MAX_DAILY_QUESTIONS:
-            GLOBAL_CACHE["daily_limits"][user_id] = user_limit
-            DIRTY_FLAGS["daily_limits"] = True
             return False
         
         user_limit["count"] += 1
@@ -324,17 +358,18 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 - Kullanıcının her türlü sorusuna (kodlama, genel kültür, analiz vb.) en iyi şekilde cevap ver.
 - "Bilmiyorum" demek yerine, elindeki bilgilerle mantıklı çıkarımlar yap.
 - Kod yazarken açıklayıcı ve temiz kod üret.
-- Eğer SİSTEM mesajı ile gelen internet verisi varsa, bunu kullanarak cevap ver.
+- Eğer SİSTEM mesajı ile gelen internet verisi varsa, bunu kesinlikle kullanarak cevap ver.
 
 [KODLAMA]
 - Python, JS, HTML, CSS ve diğer tüm dillere hakimsin.
 - Kod bloklarını her zaman ```dil ... ``` formatında ver.
 
-[KESİN KURALLAR]
-1. Eğer sana <GÜNCEL_İNTERNET_BİLGİSİ> etiketi içinde veri gelmişse, "bilmiyorum" veya "verilerimde yok" demen YASAKTIR.
+[KESİN KURALLAR - %111 ZORUNLU]
+1. Eğer sana <GÜNCEL_İNTERNET_BİLGİSİ> etiketi içinde veri gelmişse, "bilmiyorum", "verilerimde yok", "erişimim yok" demen KESİNLİKLE YASAKTIR.
 2. İnternet verisi gelmişse, bu veriyi kendi bilginmiş gibi samimi bir dille aktar.
 3. Dolar, borsa gibi konularda "İnternet taramama göre şu an dolar X TL civarında..." diyerek söze başla.
-4. Kullanıcıyla etkileşime gir (Örn: "Dolar çok hareketli, sence nereye gider?" gibi sorular sor).
+4. Asla kullanıcıyı cevapsız bırakma. Bilgi eksikse bile tahmin yürüt veya en yakın bilgiyi ver.
+
 [ÖNEMLİ]
 - Politik, cinsiyetçi veya nefret söylemi içeren konularda tarafsız ve güvenli kal.
 - Kullanıcıya her zaman motive edici bir dille yaklaş.
@@ -343,7 +378,6 @@ BUGÜNÜN TARİHİ VE SAATİ: {tam_tarih}
 # ------------------------------
 # ANA CEVAP MOTORU (REST)
 # ------------------------------
-# Not: v1beta endpoint'i en kararlı olanıdır.
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 async def gemma_cevap_async(
@@ -358,22 +392,23 @@ async def gemma_cevap_async(
 
     # 🌍 Canlı arama
     live_context = ""
-# gemma_cevap_async içindeki live_context kısmını şöyle güncelle:
+    # Zorunlu Arama Kontrolü
     if await should_search_internet(message, session):
-        print(f"🔍 Canlı veri çekiliyor: {message}")
+        print(f"🔍 Canlı veri çekiliyor (ZORUNLU): {message}")
         search_results = await fetch_live_data(message)
         live_context = f"""
-        <GÜNCEL_İNTERNET_BİLGİSİ>
+        \n\n<GÜNCEL_İNTERNET_BİLGİSİ>
         Arama Sonuçları:
         {search_results}
-    
-        TALİMAT: Kullanıcıya cevap verirken yukarıdaki verileri temel al. 
-        Eğer kur bilgisi varsa doğrudan söyle. "Verilerimde yok" deme!
-        </GÜNCEL_İNTERNET_BİLGİSİ>
+        
+        TALİMAT: Bu verileri kullanarak cevap ver. "Verilerimde yok" deme!
+        Eğer finansal veri varsa doğrudan en son değeri söyle.
+        </GÜNCEL_İNTERNET_BİLGİSİ>\n\n
         """
-        # 🧠 SON 8 MESAJ
-        recent_history = conversation[-8:]
-        contents = []
+    
+    # 🧠 SON 8 MESAJ (Context)
+    recent_history = conversation[-8:]
+    contents = []
 
     for msg in recent_history:
         contents.append({
@@ -413,10 +448,6 @@ async def gemma_cevap_async(
     }
 
     # 🔁 KEY DÖNGÜSÜ
-    # İstenen model 2.5, ama API'da henüz yoksa (404) kodun çökmemesi için
-    # otomatik fallback mekanizması ekliyoruz.
-    
-    # Öncelikli model (Senin istediğin)
     target_model = GEMINI_MODEL_NAME
     
     for _ in range(len(GEMINI_API_KEYS)):
@@ -434,8 +465,7 @@ async def gemma_cevap_async(
             ) as resp:
                 
                 # Eğer model bulunamazsa (404) otomatik olarak 1.5'e düş
-                # Bu sayede kodun hem istediğin isimle kalır hem de çalışır.
-                if resp.status == 404 and target_model == "gemini-2.5-flash":
+                if resp.status == 404:
                     print(f"⚠️ {target_model} bulunamadı, gemini-1.5-flash ile tekrar deneniyor...")
                     fallback_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
                     async with session.post(fallback_url, json=payload, timeout=30) as resp_fallback:
@@ -574,13 +604,17 @@ async def ws_chat_handler():
                 "role": "user" if m["sender"] == "user" else "model",
                 "parts": [{"text": m["message"]}]
             })
-
+            
+        # NOT: WebSocket'te de canlı veriyi zorlamak istersen buraya fetch_live_data eklenmeli.
+        # Ancak stream hızını etkilememesi için şimdilik sade bırakıldı.
+        # İstenirse buraya da live_context eklenebilir.
+        
         contents.append({
             "role": "user",
             "parts": [{"text": user_message}]
         })
 
-        # REST API üzerinden streaming (Kütüphane bağımsız)
+        # REST API üzerinden streaming
         try:
             key = await get_next_gemini_key()
             if not key:
@@ -588,8 +622,7 @@ async def ws_chat_handler():
                 await websocket.send("[END]")
                 continue
 
-            # Burada da Model ismini koruduk ama fallback lazım olabilir
-            # WebSocket için basitlik adına direk modeli kullandık
+            # Model URL
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
             
             payload = {
@@ -600,17 +633,26 @@ async def ws_chat_handler():
 
             full_response = ""
             async with session.post(url, json=payload) as resp:
-                # Eğer 2.5 bulunamazsa 1.5 dene
+                # Fallback: Eğer ana model yoksa 1.5 kullan
                 if resp.status == 404:
-                     url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:streamGenerateContent?key={key}&alt=sse"
-                     # Tekrar istek at (async with içinde tekrar istek atmak yerine burada mantığı basitleştirdik, 
-                     # production için iç içe yapı kurulmalı ama şimdilik ana chat'in çalışması öncelikli)
+                     url_fallback = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:streamGenerateContent?key={key}&alt=sse"
+                     async with session.post(url_fallback, json=payload) as resp_fallback:
+                         async for line in resp_fallback.content:
+                             if line:
+                                line = line.decode("utf-8").strip()
+                                if line.startswith("data:"):
+                                    try:
+                                        json_str = line[5:].strip()
+                                        if not json_str: continue
+                                        chunk_data = json.loads(json_str)
+                                        text_chunk = chunk_data["candidates"][0]["content"]["parts"][0]["text"]
+                                        full_response += text_chunk
+                                        await websocket.send(text_chunk)
+                                    except:
+                                        pass
                 
-                if resp.status != 200 and resp.status != 404: # 404 ise yukarıda handle edilmeliydi ama basitlik için geçiyoruz
-                    err_txt = await resp.text()
-                    print(f"WS API Error: {err_txt}")
-                    await websocket.send(f"HATA: {resp.status}")
-                else:
+                # Normal Akış
+                elif resp.status == 200:
                     async for line in resp.content:
                         if line:
                             line = line.decode("utf-8").strip()
@@ -624,6 +666,10 @@ async def ws_chat_handler():
                                     await websocket.send(text_chunk)
                                 except:
                                     pass
+                else:
+                    err_txt = await resp.text()
+                    print(f"WS API Error: {err_txt}")
+                    await websocket.send(f"HATA: {resp.status}")
 
             await websocket.send("[END]")
             
