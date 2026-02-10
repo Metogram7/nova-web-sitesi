@@ -124,7 +124,7 @@ async def get_next_gemini_key():
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-GEMINI_MODEL_NAME = "gemini-2.0-flash" 
+GEMINI_MODEL_NAME = "gemini-2.5-flash" 
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI (GÜÇLENDİRİLMİŞ)
