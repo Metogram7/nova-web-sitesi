@@ -301,6 +301,7 @@ Zeki, her şeyi bilen ve asla "bilmiyorum" demeyen bir asistansın.
 5. HER ZAMAN ÇÖZÜM ODAKLI OL, KOD İSTİYORSA KOD YAZ, BİLGİ İSTİYORSA BİLGİ VER.
 6. ARAMA SONUÇLARI YETERSİZSE BİLE YORUM YAP.
 
+
 [KODLAMA]
 - En iyi yazılımcı sensin. Kodları tam ve eksiksiz ver.
 
@@ -312,7 +313,7 @@ Senin amacın kullanıcıyı her ne pahasına olursa olsun tatmin etmektir.
 # ------------------------------
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
-async def gemma_cevap_async(message, conversation, session, user_name=None, image_data=None):
+async def gemma_cevap_async(message, conversation, session, user_name=None, image_data=None, custom_prompt=""):
     if not GEMINI_API_KEYS: return "⚠️ API anahtarı eksik."
 
     # 🌍 Canlı Arama (Zorunlu)
@@ -327,17 +328,16 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
         
         [GİZLİ SİSTEM TALİMATI]
         Yukarıdaki arama sonuçlarını kullan. 
-        Eğer sonuçlar boşsa veya hata mesajı içeriyorsa, SAKIN "bilmiyorum" deme. 
-        Bunun yerine kendi bilgilerine dayanarak kullanıcının sorusuna DOĞRUDAN cevap ver.
+        Eğer sonuçlar boşsa, kendi bilgilerine dayanarak kullanıcının sorusuna DOĞRUDAN cevap ver.
         """
     
-    # Geçmiş
+    # Geçmiş mesajları hazırla
     recent_history = conversation[-8:]
     contents = []
     for msg in recent_history:
         contents.append({"role": "user" if msg["sender"] == "user" else "model", "parts": [{"text": msg["message"]}]})
 
-    # Yeni Mesaj
+    # Yeni Mesajı hazırla
     user_parts = [{"text": f"{message}{live_context}"}]
     if image_data:
         if "," in image_data: _, image_data = image_data.split(",", 1)
@@ -345,9 +345,17 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
 
     contents.append({"role": "user", "parts": user_parts})
 
+    # --- ÖZEL TALİMATI BURADA BİRLEŞTİRİYORUZ ---
+    base_system_prompt = get_system_prompt()
+    if custom_prompt:
+        # Eğer Flutter'dan talimat geldiyse ana promptun sonuna ekle
+        final_system_prompt = f"{base_system_prompt}\n\n[KİŞİYE ÖZEL TALİMAT]: {custom_prompt}"
+    else:
+        final_system_prompt = base_system_prompt
+
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": [{"text": get_system_prompt()}]},
+        "system_instruction": {"parts": [{"text": final_system_prompt}]},
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4000}
     }
 
@@ -360,9 +368,8 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
         try:
             request_url = f"{GEMINI_REST_URL_BASE}/{target_model}:generateContent?key={key}"
             async with session.post(request_url, json=payload, timeout=40) as resp:
-                # Fallback: Model bulunamazsa 1.5-flash kullan
+                # Fallback: Eğer 2.0-flash henüz bölgenizde aktif değilse 1.5'e düş
                 if resp.status == 404:
-                    print(f"⚠️ {target_model} yok, 1.5 deneniyor...")
                     fallback_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
                     async with session.post(fallback_url, json=payload, timeout=40) as resp_f:
                         if resp_f.status == 200:
@@ -373,14 +380,13 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
                 else:
-                    print(f"❌ API Hatası: {resp.status}")
+                    print(f"❌ API Hatası (Kod: {resp.status})")
                     continue
         except Exception as e:
             print(f"❌ Request Error: {e}")
             continue
 
     return "⚠️ Bağlantı sorunu var ama ben buradayım. Lütfen tekrar sor."
-
 # ------------------------------
 # API ROUTE'LARI
 # ------------------------------
@@ -398,8 +404,13 @@ async def send_notification():
 @app.route("/api/chat", methods=["POST"])
 async def chat():
     data = await request.get_json()
-    user_id, chat_id = data.get("userId", "anon"), data.get("currentChat", "default")
-    user_message, image_base64 = data.get("message", ""), data.get("image")
+    user_id = data.get("userId", "anon")
+    chat_id = data.get("currentChat", "default")
+    user_message = data.get("message", "")
+    image_base64 = data.get("image")
+    
+    # BURASI ÇOK ÖNEMLİ: Flutter'daki systemInstruction değişkenini burada okuyoruz
+    custom_instruction = data.get("systemInstruction", "") 
 
     user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
     chat_history = user_chats.setdefault(chat_id, [])
@@ -407,28 +418,21 @@ async def chat():
     if not await check_daily_limit(user_id):
         return jsonify({"response": "⚠️ Günlük limit doldu."})
 
-    response_text = await gemma_cevap_async(user_message, chat_history, session, user_id, image_base64)
+    # custom_instruction'ı gemma_cevap_async fonksiyonuna gönderiyoruz
+    response_text = await gemma_cevap_async(
+        user_message, 
+        chat_history, 
+        session, 
+        user_id, 
+        image_base64, 
+        custom_instruction
+    )
 
     chat_history.append({"sender": "user", "message": user_message})
     chat_history.append({"sender": "nova", "message": response_text})
     DIRTY_FLAGS["history"] = True
 
     return jsonify({"response": response_text, "status": "success"})
-
-@app.route("/api/history")
-async def history():
-    uid = request.args.get("userId", "anon")
-    return jsonify(GLOBAL_CACHE["history"].get(uid, {}))
-
-@app.route("/api/delete_chat", methods=["POST"])
-async def delete_chat():
-    data = await request.get_json()
-    uid, cid = data.get("userId"), data.get("chatId")
-    if uid in GLOBAL_CACHE["history"] and cid in GLOBAL_CACHE["history"][uid]:
-        del GLOBAL_CACHE["history"][uid][cid]
-        DIRTY_FLAGS["history"] = True
-        await save_memory_to_disk(force=True)
-    return jsonify({"success": True})
 
 @app.route("/")
 async def home():
