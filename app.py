@@ -56,11 +56,11 @@ app = Quart(__name__)
 app = cors(
     app, 
     allow_origin="*", 
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept"],
-    expose_headers=["Content-Type", "Authorization"]
+    allow_methods=["GET", "POST", "OPTIONS", "DELETE", "PUT"], # Metotları genişlettik
+    allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With"], # Web paketleri için ek başlıklar
+    expose_headers=["Content-Type", "Authorization"],
+    allow_credentials=True
 )
-
 # Global Değişkenler
 session: aiohttp.ClientSession | None = None
 
@@ -72,12 +72,16 @@ MAIL_SIFRE = os.getenv("MAIL_SIFRE", "gamtdoiralefaruk")
 ALICI_ADRES = MAIL_ADRES
 MAX_DAILY_QUESTIONS = 50 
 
-# Dosya Yolları
-HISTORY_FILE = "chat_history.json"
-LAST_SEEN_FILE = "last_seen.json"
-CACHE_FILE = "cache.json"
-TOKENS_FILE = "tokens.json"
-LIMITS_FILE = "daily_limits.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def get_path(filename):
+    return os.path.join(BASE_DIR, filename)
+
+HISTORY_FILE = get_path("chat_history.json")
+LAST_SEEN_FILE = get_path("last_seen.json")
+CACHE_FILE = get_path("cache.json")
+TOKENS_FILE = get_path("tokens.json")
+LIMITS_FILE = get_path("daily_limits.json")
 
 # RAM Önbelleği
 GLOBAL_CACHE = {
@@ -464,7 +468,12 @@ async def chat():
     chat_history.append({"sender": "nova", "message": response_text})
     DIRTY_FLAGS["history"] = True
 
-    return jsonify({"response": response_text, "status": "success"})
+    return jsonify({
+        "response": response_text, 
+        "status": "success",
+        "timestamp": datetime.now().isoformat(), # Flutter tarafında sıralama yapmak için
+        "model": GEMINI_MODEL_NAME # Hangi modelin cevap verdiğini izlemek için
+    })
 
 @app.route("/")
 async def home():
@@ -479,8 +488,11 @@ async def ws_chat_handler():
     while True:
         try:
             data = await websocket.receive()
+            if not data: continue # Boş veri gelirse döngüyü kırma
             msg = json.loads(data)
-        except: break
+        except Exception as e:
+            print(f"WebSocket Hatası: {e}")
+            break
 
         user_id, chat_id, user_message = msg.get("userId", "anon"), msg.get("chatId", "live"), msg.get("message", "")
         user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
@@ -556,8 +568,12 @@ async def keep_alive():
         # Ping logic here if needed
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    if os.name == 'nt':
+    # Web platformları PORT environment değişkenini kullanır
+    port = int(os.environ.get("PORT", 5000)) 
+    
+    if os.name == 'nt': # Windows (Senin PC)
         try: asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except: pass
-    app.run(host="0.0.0.0", port=port)
+        
+    # debug=False yaparsan Web'de daha stabil çalışır
+    app.run(host="0.0.0.0", port=port, debug=False)
