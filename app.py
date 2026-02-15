@@ -56,12 +56,10 @@ app = Quart(__name__)
 app = cors(
     app, 
     allow_origin="*", 
-    allow_methods=["GET", "POST", "OPTIONS", "DELETE", "PUT"], # Metotları genişlettik
-    allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With"], # Web paketleri için ek başlıklar
-    expose_headers=["Content-Type", "Authorization"],
-    allow_credentials=True
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept"],
+    allow_credentials=False 
 )
-# Global Değişkenler
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
@@ -565,15 +563,14 @@ async def ws_chat_handler():
 async def keep_alive():
     while True:
         await asyncio.sleep(600)
-        # Ping logic here if needed
 
 if __name__ == "__main__":
-    # Web platformları PORT environment değişkenini kullanır
+
     port = int(os.environ.get("PORT", 5000)) 
     
-    if os.name == 'nt': # Windows (Senin PC)
+    if os.name == 'nt':
         try: asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except: pass
         
-    # debug=False yaparsan Web'de daha stabil çalışır
+
     app.run(host="0.0.0.0", port=port, debug=False)
