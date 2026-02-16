@@ -54,14 +54,21 @@ app = Quart(__name__)
 # ------------------------------------
 # GÜNCELLENMİŞ CORS AYARLARI (WEB + MOBİL)
 # ------------------------------------
+# ------------------------------------
+# GÜNCELLENMİŞ CORS AYARLARI (WEB + MOBİL UYUMLU)
+# ------------------------------------
 app = cors(
     app, 
-    allow_origin=["https://novawebb.com", "http://localhost", "*"], # novawebb.com eklendi
+    allow_origin=[
+        "https://novawebb.com",       # Senin web siten
+        "https://www.novawebb.com",   # www versiyonu
+        "http://localhost",           # Yerel test (Web)
+        "http://127.0.0.1:5000"       # Yerel test (API)
+    ], 
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
     allow_credentials=True 
 )
-
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
