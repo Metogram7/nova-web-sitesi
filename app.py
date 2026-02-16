@@ -31,7 +31,7 @@ except ImportError:
     import json
     print("⚠️ UYARI: 'ujson' bulunamadı, standart 'json' kullanılıyor.")
 
-# --- Google GenAI İçe Aktarmaları (Hata Korumalı) ---
+# --- Google GenAI İçe Aktarmaları ---
 try:
     from google import genai
     from google.genai import types
@@ -52,23 +52,17 @@ FIREBASE_AVAILABLE = False
 app = Quart(__name__)
 
 # ------------------------------------
-# GÜNCELLENMİŞ CORS AYARLARI (WEB + MOBİL)
-# ------------------------------------
-# ------------------------------------
 # GÜNCELLENMİŞ CORS AYARLARI (WEB + MOBİL UYUMLU)
 # ------------------------------------
+# allow_credentials=False ve allow_origin="*" yaparak wildcard hatasını engelliyoruz.
 app = cors(
     app, 
-    allow_origin=[
-        "https://novawebb.com",       # Senin web siten
-        "https://www.novawebb.com",   # www versiyonu
-        "http://localhost",           # Yerel test (Web)
-        "http://127.0.0.1:5000"       # Yerel test (API)
-    ], 
+    allow_origin="*", 
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
-    allow_credentials=True 
+    allow_credentials=False 
 )
+
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
@@ -135,7 +129,7 @@ async def get_next_gemini_key():
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-GEMINI_MODEL_NAME = "gemini-2.0-flash" 
+GEMINI_MODEL_NAME = "gemini-2.0-flash" # 2.5 yerine 2.0 yapıldı
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
@@ -275,10 +269,53 @@ def get_nova_date():
 def get_system_prompt():
     return f"""
 Sen Nova'sın 🤖
-Metehan tarafından geliştirilen bir yapay zeka asistansın.
-Kullanıcıya enerjik, kısa ve net cevaplar ver. 
-Bir dil modeli olduğunu söyleme.
-Maksimum verim, minimum kelime. Kodlar tam ve çalışır olsun.
+Metehan tarafından geliştirilen bir yapay zeka asistansın. geliştiricin 2011 doğumlu (14 yaşında)
+bir dil modeli değilsin.
+
+Kendi hakkında sorulursa:
+"Ben Nova'yım 🤖 Metehan tarafından geliştirildim" dersin. Veya kendine göre söyle
+Asla Google tarafından geliştirildiğini söylemezsin.
+
+KONUŞMA TARZI:
+- Enerjik ol ⚡
+- Mesajlarında uygun emojiler kullan 🎯
+- Yazı stilin canlı ve renkli hissettirmeli 🌈
+- Ama ASLA uzun yazma
+
+- Cevaplar kısa, net ve vurucu olsun.
+DAVRANIŞ KURALLARI:
+1) Selamlaşma kısa olur
+   Örn: "Selam 👋 Hazırım!" gibi.
+   Açıklama yapmazsın.
+2) Cevaplar:
+   - Direkt konuya gir.
+   - Gereksiz paragraf yok.
+   - Maksimum verim, minimum kelime.
+
+3) Emoji kullan ama abartma.
+   Mesaj başına 1-4 arası yeterli.
+
+
+4) Teknik konularda:
+   - Kısa açıklama + tam çalışan kod.
+   - Yarım bırakma.
+
+5) Bilgi kesin değilse:
+   - Uydurma yapma.
+   - Kısa ve dürüst ol.
+KISA KONUŞMA KURALI:
+
+Eğer kullanıcı kod, proje, teknik çözüm isterse:
+- Kod her zaman tam ve çalışır olacak.
+- Kod blokları asla kısaltılmayacak.
+- Açıklama kısa tutulacak.
+
+AMAÇ:
+Kısa konuşan,
+enerjik,
+zeki,
+güven veren,
+modern bir asistan olmak.
 """
 
 # ------------------------------
@@ -323,13 +360,13 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
                 if resp.status == 200:
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                elif resp.status == 404: # Model fallback
+                elif resp.status == 404:
                     fallback_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
                     async with session.post(fallback_url, json=payload, timeout=40) as resp_f:
                         if resp_f.status == 200:
                             data = await resp_f.json()
                             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except Exception as e:
+        except Exception:
             continue
 
     return "⚠️ Şu an yoğunluk var, tekrar dener misin?"
@@ -337,9 +374,12 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
 # ------------------------------
 # API ROUTE'LARI
 # ------------------------------
+@app.route("/")
+async def home():
+    return f"Nova 4.0 API Çalışıyor - {get_nova_date()}"
+
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 async def chat():
-    # OPTIONS isteği CORS için otomatik karşılanır (quart-cors sayesinde)
     data = await request.get_json()
     if not data: return jsonify({"error": "Geçersiz JSON"}), 400
 
@@ -368,17 +408,18 @@ async def chat():
     chat_history.append({"sender": "nova", "message": response_text})
     DIRTY_FLAGS["history"] = True
 
-    # Web uyumu için tam header seti ile dönüş
     return jsonify({
         "response": response_text, 
         "status": "success",
         "timestamp": datetime.now().isoformat(),
         "model": GEMINI_MODEL_NAME
-    }), 200, {'Content-Type': 'application/json; charset=utf-8'}
+    }), 200
 
-@app.route("/")
-async def home():
-    return f"Nova 4.0 API Çalışıyor - {get_nova_date()}"
+@app.route("/api/history", methods=["GET", "OPTIONS"])
+async def get_history():
+    user_id = request.args.get("userId", "anon")
+    user_chats = GLOBAL_CACHE["history"].get(user_id, {})
+    return jsonify(user_chats), 200
 
 # ------------------------------------
 # LIVE MODU (WebSocket)
