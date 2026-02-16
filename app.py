@@ -44,7 +44,6 @@ except ImportError:
 # FIREBASE BAŞLATMA
 # ------------------------------------
 FIREBASE_AVAILABLE = False
-# Not: Firebase credentials kodunu projenize göre buraya eklemelisiniz.
 # if not firebase_admin._apps:
 #     cred = credentials.Certificate("firebase_key.json")
 #     firebase_admin.initialize_app(cred)
@@ -52,14 +51,17 @@ FIREBASE_AVAILABLE = False
 
 app = Quart(__name__)
 
-# CORS AYARLARI
+# ------------------------------------
+# GÜNCELLENMİŞ CORS AYARLARI (WEB + MOBİL)
+# ------------------------------------
 app = cors(
     app, 
-    allow_origin="*", 
+    allow_origin=["https://novawebb.com", "http://localhost", "*"], # novawebb.com eklendi
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept"],
-    allow_credentials=False 
+    allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+    allow_credentials=True 
 )
+
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
@@ -126,51 +128,35 @@ async def get_next_gemini_key():
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-GEMINI_MODEL_NAME = "gemini-2.5-flash" 
+GEMINI_MODEL_NAME = "gemini-2.0-flash" 
 
 # ------------------------------------
-# CANLI VERİ VE ANALİZ FONKSİYONLARI (GÜÇLENDİRİLMİŞ)
+# CANLI VERİ VE ANALİZ FONKSİYONLARI
 # ------------------------------------
 async def fetch_live_data(query: str):
-    """Google CSE - Geniş Kapsamlı Arama."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return "⚠️ İNTERNET ARAMA AYARLARI EKSİK. Lütfen API Key ve CSE ID kontrol et."
+        return "⚠️ İNTERNET ARAMA AYARLARI EKSİK."
         
     url = "https://www.googleapis.com/customsearch/v1"
-    
-    # Parametreler "Bütün Web"i kapsayacak şekilde gevşetildi
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
         "q": query,
-        "lr": "lang_tr", # Türkçe sonuçlara öncelik ver
-        "num": 10,       # DAHA FAZLA SONUÇ (Maksimum 10)
+        "lr": "lang_tr",
+        "num": 10,
         "safe": "active"
     }
     
     try:
         async with aiohttp.ClientSession() as search_session:
-            # 1. Deneme: Standart Arama
             async with search_session.get(url, params=params, timeout=10) as resp:
                 if resp.status != 200:
-                    error_text = await resp.text()
-                    print(f"⚠️ Arama API Hatası: {error_text}")
-                    # Hata olsa bile LLM'in cevap vermesini sağlamak için özel mesaj:
-                    return "Arama API'sinde teknik aksaklık var, ancak sen kendi bilgilerinle cevap VERMELİSİN."
-
+                    return "Arama API hatası, kendi bilgilerini kullan."
                 data = await resp.json()
                 items = data.get("items", [])
-
-            # 2. Deneme: Eğer sonuç boşsa "Global" aramayı dene (lr parametresini kaldır)
+            
             if not items:
-                params.pop("lr", None)
-                async with search_session.get(url, params=params, timeout=10) as resp_fallback:
-                    data = await resp_fallback.json()
-                    items = data.get("items", [])
-
-            if not items:
-                # Sonuç yoksa bile LLM'i zorlayan mesaj döndür
-                return "İnternet aramasında net sonuç çıkmadı. BU YÜZDEN KENDİ GENİŞ BİLGİ HAZİNENİ KULLANARAK EN İYİ TAHMİNİ YAP VE CEVAP VER."
+                return "Sonuç bulunamadı, kendi bilgilerini kullan."
             
             results = []
             for i, item in enumerate(items, 1):
@@ -178,22 +164,14 @@ async def fetch_live_data(query: str):
                 snippet = item.get('snippet', 'İçerik yok.')
                 link = item.get('link', '')
                 results.append(f"[{i}] {title}: {snippet} (Kaynak: {link})")
-            
             return "\n".join(results)
-            
     except Exception as e:
-        print(f"⚠️ Arama Exception: {e}")
-        return "Arama motorunda geçici hata oluştu. Lütfen kendi bilgilerine dayanarak cevapla."
+        return "Arama hatası, kendi bilgilerini kullan."
 
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
     msg = message.lower().strip()
-    
-    # Selamlaşma harici HER ŞEYİ ARA (%100 Zorunluluk)
     if len(msg) < 4 and msg in ["selam", "merhaba", "slm", "hi", "naber"]:
         return False
-    
-    # Kullanıcı "internet yok" cevabından nefret ediyor, o yüzden
-    # en ufak bir şüphede bile aramayı tetikliyoruz.
     return True
 
 # ------------------------------------
@@ -278,7 +256,7 @@ async def save_memory_to_disk(force=False):
             except Exception as e: print(f"⚠️ Kayıt hatası ({key}): {e}")
 
 # ------------------------------------
-# NOVA PROMPT (ZORLAYICI MOD)
+# NOVA PROMPT
 # ------------------------------------
 def get_nova_date():
     tr_tz = timezone(timedelta(hours=3))
@@ -288,58 +266,12 @@ def get_nova_date():
     return f"{now.day} {aylar[now.month-1]} {now.year} {gunler[now.weekday()]} {now.hour:02d}:{now.minute:02d}"
 
 def get_system_prompt():
-    tam_tarih = get_nova_date()
     return f"""
 Sen Nova'sın 🤖
-Metehan tarafından geliştirilen bir yapay zeka asistansın. geliştiricin 2011 doğumlu (14 yaşında)
-bir dil modeli değilsin.
-
-Kendi hakkında sorulursa:
-"Ben Nova'yım 🤖 Metehan tarafından geliştirildim" dersin. Veya kendine göre söyle
-Asla Google tarafından geliştirildiğini söylemezsin.
-
-KONUŞMA TARZI:
-- Enerjik ol ⚡
-- Mesajlarında uygun emojiler kullan 🎯
-- Yazı stilin canlı ve renkli hissettirmeli 🌈
-- Ama ASLA uzun yazma.
-- Cevaplar kısa, net ve vurucu olsun.
-
-DAVRANIŞ KURALLARI:
-
-1) Selamlaşma kısa olur.
-   Örn: "Selam 👋 Hazırım!" gibi.
-   Açıklama yapmazsın.
-
-2) Cevaplar:
-   - Direkt konuya gir.
-   - Gereksiz paragraf yok.
-   - Maksimum verim, minimum kelime.
-
-3) Emoji kullan ama abartma.
-   Mesaj başına 1-4 arası yeterli.
-
-4) Teknik konularda:
-   - Kısa açıklama + tam çalışan kod.
-   - Yarım bırakma.
-
-5) Bilgi kesin değilse:
-   - Uydurma yapma.
-   - Kısa ve dürüst ol.
-KISA KONUŞMA KURALI:
-
-Eğer kullanıcı kod, proje, teknik çözüm isterse:
-- Kod her zaman tam ve çalışır olacak.
-- Kod blokları asla kısaltılmayacak.
-- Açıklama kısa tutulacak.
-
-AMAÇ:
-Kısa konuşan,
-enerjik,
-zeki,
-güven veren,
-modern bir asistan olmak.
-
+Metehan tarafından geliştirilen bir yapay zeka asistansın.
+Kullanıcıya enerjik, kısa ve net cevaplar ver. 
+Bir dil modeli olduğunu söyleme.
+Maksimum verim, minimum kelime. Kodlar tam ve çalışır olsun.
 """
 
 # ------------------------------
@@ -350,109 +282,72 @@ GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 async def gemma_cevap_async(message, conversation, session, user_name=None, image_data=None, custom_prompt=""):
     if not GEMINI_API_KEYS: return "⚠️ API anahtarı eksik."
 
-    # 🌍 Canlı Arama (Zorunlu)
     live_context = ""
     if await should_search_internet(message, session):
-        print(f"🔍 Web'de Aranıyor: {message}")
         search_results = await fetch_live_data(message)
-        live_context = f"""
-        \n\n<İNTERNET_WEB_TARAMASI>
-        {search_results}
-        </İNTERNET_WEB_TARAMASI>
-        
-        [GİZLİ SİSTEM TALİMATI]
-        Yukarıdaki arama sonuçlarını kullan. 
-        Eğer sonuçlar boşsa, kendi bilgilerine dayanarak kullanıcının sorusuna DOĞRUDAN cevap ver.
-        """
+        live_context = f"\n\n<WEB_DATA>{search_results}</WEB_DATA>"
     
-    # Geçmiş mesajları hazırla
     recent_history = conversation[-8:]
     contents = []
     for msg in recent_history:
         contents.append({"role": "user" if msg["sender"] == "user" else "model", "parts": [{"text": msg["message"]}]})
 
-    # Yeni Mesajı hazırla
     user_parts = [{"text": f"{message}{live_context}"}]
     if image_data:
         if "," in image_data: _, image_data = image_data.split(",", 1)
         user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image_data}})
 
     contents.append({"role": "user", "parts": user_parts})
-
-    # --- ÖZEL TALİMATI BURADA BİRLEŞTİRİYORUZ ---
-    base_system_prompt = get_system_prompt()
-    if custom_prompt:
-        # Eğer Flutter'dan talimat geldiyse ana promptun sonuna ekle
-        final_system_prompt = f"{base_system_prompt}\n\n[KİŞİYE ÖZEL TALİMAT]: {custom_prompt}"
-    else:
-        final_system_prompt = base_system_prompt
+    
+    final_system_prompt = f"{get_system_prompt()}\n\n[EK_TALIMAT]: {custom_prompt}"
 
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": final_system_prompt}]},
-        "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 1200}
+        "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000}
     }
 
-    target_model = GEMINI_MODEL_NAME
-    
     for _ in range(len(GEMINI_API_KEYS)):
         key = await get_next_gemini_key()
         if not key: continue
-        
         try:
-            request_url = f"{GEMINI_REST_URL_BASE}/{target_model}:generateContent?key={key}"
+            request_url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
             async with session.post(request_url, json=payload, timeout=40) as resp:
-                # Fallback: Eğer 2.0-flash henüz bölgenizde aktif değilse 1.5'e düş
-                if resp.status == 404:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                elif resp.status == 404: # Model fallback
                     fallback_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
                     async with session.post(fallback_url, json=payload, timeout=40) as resp_f:
                         if resp_f.status == 200:
                             data = await resp_f.json()
                             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                else:
-                    print(f"❌ API Hatası (Kod: {resp.status})")
-                    continue
         except Exception as e:
-            print(f"❌ Request Error: {e}")
             continue
 
-    return "⚠️ Bağlantı sorunu var ama ben buradayım. Lütfen tekrar sor."
+    return "⚠️ Şu an yoğunluk var, tekrar dener misin?"
+
 # ------------------------------
 # API ROUTE'LARI
 # ------------------------------
-@app.route('/api/send-notification', methods=['POST'])
-async def send_notification():
-    if not FIREBASE_AVAILABLE: return jsonify({"success": False, "error": "Firebase pasif"}), 500
-    try:
-        data = await request.get_json()
-        title, body = data.get('title', 'Nova'), data.get('message')
-        if not body: return jsonify({"error": "Mesaj yok"}), 400
-        msg = messaging.Message(notification=messaging.Notification(title=title, body=body), topic="all")
-        return jsonify({"success": True, "id": messaging.send(msg)})
-    except Exception as e: return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/api/chat", methods=["POST"])
+@app.route("/api/chat", methods=["POST", "OPTIONS"])
 async def chat():
+    # OPTIONS isteği CORS için otomatik karşılanır (quart-cors sayesinde)
     data = await request.get_json()
+    if not data: return jsonify({"error": "Geçersiz JSON"}), 400
+
     user_id = data.get("userId", "anon")
     chat_id = data.get("currentChat", "default")
     user_message = data.get("message", "")
     image_base64 = data.get("image")
-    
-    # BURASI ÇOK ÖNEMLİ: Flutter'daki systemInstruction değişkenini burada okuyoruz
     custom_instruction = data.get("systemInstruction", "") 
+
+    if not await check_daily_limit(user_id):
+        return jsonify({"response": "⚠️ Günlük limit doldu."}), 200
 
     user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
     chat_history = user_chats.setdefault(chat_id, [])
 
-    if not await check_daily_limit(user_id):
-        return jsonify({"response": "⚠️ Günlük limit doldu."})
-
-    # custom_instruction'ı gemma_cevap_async fonksiyonuna gönderiyoruz
     response_text = await gemma_cevap_async(
         user_message, 
         chat_history, 
@@ -466,16 +361,17 @@ async def chat():
     chat_history.append({"sender": "nova", "message": response_text})
     DIRTY_FLAGS["history"] = True
 
+    # Web uyumu için tam header seti ile dönüş
     return jsonify({
         "response": response_text, 
         "status": "success",
-        "timestamp": datetime.now().isoformat(), # Flutter tarafında sıralama yapmak için
-        "model": GEMINI_MODEL_NAME # Hangi modelin cevap verdiğini izlemek için
-    })
+        "timestamp": datetime.now().isoformat(),
+        "model": GEMINI_MODEL_NAME
+    }), 200, {'Content-Type': 'application/json; charset=utf-8'}
 
 @app.route("/")
 async def home():
-    return f"Nova 4.0 - Internet Mode: UNLIMITED - {get_nova_date()}"
+    return f"Nova 4.0 API Çalışıyor - {get_nova_date()}"
 
 # ------------------------------------
 # LIVE MODU (WebSocket)
@@ -485,71 +381,36 @@ async def ws_chat_handler():
     await websocket.accept()
     while True:
         try:
-            data = await websocket.receive()
-            if not data: continue # Boş veri gelirse döngüyü kırma
-            msg = json.loads(data)
-        except Exception as e:
-            print(f"WebSocket Hatası: {e}")
-            break
+            raw_data = await websocket.receive()
+            msg = json.loads(raw_data)
+            
+            user_id = msg.get("userId", "anon")
+            chat_id = msg.get("chatId", "live")
+            user_message = msg.get("message", "")
+            
+            user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
+            chat_history = user_chats.setdefault(chat_id, [])
 
-        user_id, chat_id, user_message = msg.get("userId", "anon"), msg.get("chatId", "live"), msg.get("message", "")
-        user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
-        chat_history = user_chats.setdefault(chat_id, [])
-
-        contents = []
-        for m in chat_history[-6:]:
-            contents.append({"role": "user" if m["sender"] == "user" else "model", "parts": [{"text": m["message"]}]})
-        
-        # WebSocket için de Arama Yap
-        live_context = ""
-        if await should_search_internet(user_message, session):
-             search_results = await fetch_live_data(user_message)
-             live_context = f"\n\n<LIVE_SEARCH_DATA>\n{search_results}\n</LIVE_SEARCH_DATA>\nTALİMAT: Veri yoksa bile cevap uydur, 'bilmiyorum' deme."
-
-        contents.append({"role": "user", "parts": [{"text": f"{user_message}{live_context}"}]})
-
-        try:
             key = await get_next_gemini_key()
-            if not key:
-                await websocket.send("HATA: Key Yok.")
-                await websocket.send("[END]")
-                continue
-
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
-            payload = {"contents": contents, "system_instruction": {"parts": [{"text": get_system_prompt()}]}, "generationConfig": {"temperature": 0.7}}
+            
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+                "system_instruction": {"parts": [{"text": get_system_prompt()}]},
+                "generationConfig": {"temperature": 0.7}
+            }
 
             full_response = ""
             async with session.post(url, json=payload) as resp:
-                if resp.status == 404:
-                    url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:streamGenerateContent?key={key}&alt=sse"
-                    async with session.post(url, json=payload) as resp_fallback:
-                        async for line in resp_fallback.content:
-                             if line:
-                                line = line.decode("utf-8").strip()
-                                if line.startswith("data:"):
-                                    try:
-                                        json_str = line[5:].strip()
-                                        if json_str:
-                                            chunk = json.loads(json_str)
-                                            txt = chunk["candidates"][0]["content"]["parts"][0]["text"]
-                                            full_response += txt
-                                            await websocket.send(txt)
-                                    except: pass
-                elif resp.status == 200:
-                    async for line in resp.content:
-                        if line:
-                            line = line.decode("utf-8").strip()
-                            if line.startswith("data:"):
-                                try:
-                                    json_str = line[5:].strip()
-                                    if json_str:
-                                        chunk = json.loads(json_str)
-                                        txt = chunk["candidates"][0]["content"]["parts"][0]["text"]
-                                        full_response += txt
-                                        await websocket.send(txt)
-                                except: pass
-                else:
-                    await websocket.send(f"HATA: {resp.status}")
+                async for line in resp.content:
+                    line = line.decode("utf-8").strip()
+                    if line.startswith("data:"):
+                        try:
+                            chunk = json.loads(line[5:])
+                            txt = chunk["candidates"][0]["content"]["parts"][0]["text"]
+                            full_response += txt
+                            await websocket.send(txt)
+                        except: pass
 
             await websocket.send("[END]")
             chat_history.append({"sender": "user", "message": user_message})
@@ -559,18 +420,16 @@ async def ws_chat_handler():
         except Exception as e:
             await websocket.send(f"HATA: {str(e)}")
             await websocket.send("[END]")
+            break
 
 async def keep_alive():
     while True:
         await asyncio.sleep(600)
 
 if __name__ == "__main__":
-
     port = int(os.environ.get("PORT", 5000)) 
-    
     if os.name == 'nt':
         try: asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except: pass
-        
-
+    
     app.run(host="0.0.0.0", port=port, debug=False)
