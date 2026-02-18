@@ -59,8 +59,8 @@ app = cors(
     app, 
     allow_origin="*", 
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-    allow_credentials=False  # Bunu False yapınca hata düzelecektir
+    allow_headers=["Content-Type", "Authorization", "Accept"],
+    allow_credentials=False  # KESİNLİKLE FALSE OLMALI
 )
 session: aiohttp.ClientSession | None = None
 
