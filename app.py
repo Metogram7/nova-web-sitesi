@@ -59,10 +59,9 @@ app = cors(
     app, 
     allow_origin="*", 
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
-    allow_credentials=False 
+    allow_headers=["Content-Type", "Authorization", "Accept"],
+    allow_credentials=True
 )
-
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
