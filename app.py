@@ -171,35 +171,45 @@ async def should_search_internet(message: str, session: aiohttp.ClientSession):
     return True
 
 # ------------------------------------
-# LİMİT KONTROL
+# LİMİT & ABONELİK SİSTEMİ
 # ------------------------------------
 
+limit_lock = asyncio.Lock()
+
+
+# === PLUS AKTİF ET (Şimdilik ücretsiz test) ===
+@app.route("/api/activate_plus", methods=["POST"])
+async def activate_plus():
+    data = await request.get_json()
+    user_id = data.get("userId")
+
+    if not user_id:
+        return jsonify({"error": "userId gerekli"}), 400
+
+    GLOBAL_CACHE.setdefault("subscriptions", {})
+    GLOBAL_CACHE["subscriptions"][user_id] = {
+        "is_plus": True
+    }
+
+    DIRTY_FLAGS["subscriptions"] = True
+
+    return jsonify({
+        "status": "success",
+        "message": "Nova Plus aktif edildi 🚀"
+    }), 200
+
+
+# === MESAJ KULLANIM KONTROL ===
 async def can_use_message(user_id):
     async with limit_lock:
         tr_tz = timezone(timedelta(hours=3))
         now = datetime.now(tr_tz)
 
-        is_plus = GLOBAL_CACHE["subscriptions"].get(user_id, {}).get("is_plus", False)
+        # Abonelik kontrolü
+        is_plus = GLOBAL_CACHE.get("subscriptions", {}).get(user_id, {}).get("is_plus", False)
         max_limit = PLUS_LIMIT if is_plus else FREE_LIMIT
 
-        user_limit = GLOBAL_CACHE["daily_limits"].get(
-            user_id,
-            {"count": 0, "last_reset": now.isoformat()}
-        )
-
-        try:
-            last_reset = datetime.fromisoformat(user_limit.get("last_reset"))
-        except:
-            last_reset = now
-
-async def can_use_message(user_id):
-    async with limit_lock:
-        tr_tz = timezone(timedelta(hours=3))
-        now = datetime.now(tr_tz)
-
-        is_plus = GLOBAL_CACHE["subscriptions"].get(user_id, {}).get("is_plus", False)
-        max_limit = PLUS_LIMIT if is_plus else FREE_LIMIT
-
+        # Kullanıcı limiti çek
         user_limit = GLOBAL_CACHE["daily_limits"].get(
             user_id,
             {"count": 0, "last_reset": now.isoformat()}
@@ -212,15 +222,21 @@ async def can_use_message(user_id):
 
         # Gün değiştiyse resetle
         if now.date() > last_reset.date():
-            user_limit = {"count": 0, "last_reset": now.isoformat()}
+            user_limit = {
+                "count": 0,
+                "last_reset": now.isoformat()
+            }
             GLOBAL_CACHE["daily_limits"][user_id] = user_limit
             DIRTY_FLAGS["daily_limits"] = True
 
-        # Limit kontrolü
+        # Limit doldu mu?
         if user_limit["count"] >= max_limit:
             return False, max_limit
 
         return True, max_limit
+
+
+# === MESAJ SAYACINI ARTIR ===
 async def increase_daily_limit(user_id):
     async with limit_lock:
         tr_tz = timezone(timedelta(hours=3))
@@ -236,9 +252,6 @@ async def increase_daily_limit(user_id):
 
         GLOBAL_CACHE["daily_limits"][user_id] = user_limit
         DIRTY_FLAGS["daily_limits"] = True
-        
-limit_lock = asyncio.Lock()
-
 # ------------------------------------
 # YAŞAM DÖNGÜSÜ
 # ------------------------------------
