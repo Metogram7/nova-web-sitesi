@@ -49,13 +49,12 @@ app = Quart(__name__)
 # ------------------------------------
 # GÜNCELLENMİŞ CORS AYARLARI (WEB + MOBİL UYUMLU)
 # ------------------------------------
-# allow_credentials=False ve allow_origin="*" yaparak wildcard hatasını engelliyoruz.
 app = cors(
     app, 
     allow_origin="*", 
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept"],
-    allow_credentials=False  # KESİNLİKLE FALSE OLMALI
+    allow_credentials=False 
 )
 session: aiohttp.ClientSession | None = None
 
@@ -124,7 +123,7 @@ async def get_next_gemini_key():
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-GEMINI_MODEL_NAME = "gemini-2.5-flash" # 2.5 yerine 2.0 yapıldı
+GEMINI_MODEL_NAME = "gemini-2.5-flash" 
 
 # ------------------------------------
 # CANLI VERİ VE ANALİZ FONKSİYONLARI
@@ -164,6 +163,23 @@ async def fetch_live_data(query: str):
     except Exception as e:
         return "Arama hatası, kendi bilgilerini kullan."
 
+# Kullanıcı verilerini tutacak ana sözlük
+user_data = {}
+
+@app.route('/api/user_status/<user_id>', methods=['GET'])
+async def get_user_status(user_id):
+    if user_id not in user_data:
+        user_data[user_id] = {
+            "isPlus": False,
+            "daily_limit": 0,
+            "last_reset": datetime.now(timezone.utc).isoformat()
+        }
+    
+    return jsonify({
+        "userId": user_id,
+        "isPlus": user_data[user_id].get("isPlus", False)
+    }), 200
+
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
     msg = message.lower().strip()
     if len(msg) < 4 and msg in ["selam", "merhaba", "slm", "hi", "naber"]:
@@ -176,8 +192,6 @@ async def should_search_internet(message: str, session: aiohttp.ClientSession):
 
 limit_lock = asyncio.Lock()
 
-
-# === PLUS AKTİF ET (Şimdilik ücretsiz test) ===
 @app.route("/api/activate_plus", methods=["POST"])
 async def activate_plus():
     data = await request.get_json()
@@ -198,18 +212,26 @@ async def activate_plus():
         "message": "Nova Plus aktif edildi 🚀"
     }), 200
 
+@app.route("/api/user_status")
+async def user_status():
+    user_id = request.args.get("userId")
 
-# === MESAJ KULLANIM KONTROL ===
+    is_plus = GLOBAL_CACHE["subscriptions"].get(
+        user_id, {}
+    ).get("is_plus", False)
+
+    return jsonify({
+        "is_plus": is_plus
+    }), 200
+
 async def can_use_message(user_id):
     async with limit_lock:
         tr_tz = timezone(timedelta(hours=3))
         now = datetime.now(tr_tz)
 
-        # Abonelik kontrolü
         is_plus = GLOBAL_CACHE.get("subscriptions", {}).get(user_id, {}).get("is_plus", False)
         max_limit = PLUS_LIMIT if is_plus else FREE_LIMIT
 
-        # Kullanıcı limiti çek
         user_limit = GLOBAL_CACHE["daily_limits"].get(
             user_id,
             {"count": 0, "last_reset": now.isoformat()}
@@ -220,7 +242,6 @@ async def can_use_message(user_id):
         except:
             last_reset = now
 
-        # Gün değiştiyse resetle
         if now.date() > last_reset.date():
             user_limit = {
                 "count": 0,
@@ -229,14 +250,11 @@ async def can_use_message(user_id):
             GLOBAL_CACHE["daily_limits"][user_id] = user_limit
             DIRTY_FLAGS["daily_limits"] = True
 
-        # Limit doldu mu?
         if user_limit["count"] >= max_limit:
             return False, max_limit
 
         return True, max_limit
 
-
-# === MESAJ SAYACINI ARTIR ===
 async def increase_daily_limit(user_id):
     async with limit_lock:
         tr_tz = timezone(timedelta(hours=3))
@@ -252,6 +270,7 @@ async def increase_daily_limit(user_id):
 
         GLOBAL_CACHE["daily_limits"][user_id] = user_limit
         DIRTY_FLAGS["daily_limits"] = True
+
 # ------------------------------------
 # YAŞAM DÖNGÜSÜ
 # ------------------------------------
@@ -329,7 +348,7 @@ Metehan tarafından geliştirilen bir yapay zeka asistansın. geliştiricin 2011
 bir dil modeli değilsin.
 
 Kendi hakkında sorulursa:
-"Ben Nova'yım 🤖 Metehan tarafından geliştirildim" dersin. Veya kendine göre söyle
+"Ben Nova'yım 🤖 Metehan tarafından geliştirildim" dersin.
 Asla Google tarafından geliştirildiğini söylemezsin.
 
 KONUŞMA TARZI:
@@ -337,41 +356,15 @@ KONUŞMA TARZI:
 - Mesajlarında uygun emojiler kullan 🎯
 - Yazı stilin canlı ve renkli hissettirmeli 🌈
 - Ama ASLA uzun yazma
-
 - Cevaplar kısa, net ve vurucu olsun.
+
 DAVRANIŞ KURALLARI:
-1) Selamlaşma kısa olur
-   Örn: "Selam 👋 Hazırım!" gibi.
-   Açıklama yapmazsın.
-2) Cevaplar:
-   - Direkt konuya gir.
-   - Gereksiz paragraf yok.
-   - Maksimum verim, minimum kelime.
+1) Selamlaşma kısa olur.
+2) Cevaplar: Direkt konuya gir, gereksiz paragraf yok.
+3) Emoji kullan ama abartma (1-4 arası).
+4) Teknik konularda: Kısa açıklama + tam çalışan kod. Kod blokları asla kısaltılmayacak.
 
-3) Emoji kullan ama abartma.
-   Mesaj başına 1-4 arası yeterli.
-
-
-4) Teknik konularda:
-   - Kısa açıklama + tam çalışan kod.
-   - Yarım bırakma.
-
-5) Bilgi kesin değilse:
-   - Uydurma yapma.
-   - Kısa ve dürüst ol.
-KISA KONUŞMA KURALI:
-
-Eğer kullanıcı kod, proje, teknik çözüm isterse:
-- Kod her zaman tam ve çalışır olacak.
-- Kod blokları asla kısaltılmayacak.
-- Açıklama kısa tutulacak.
-
-AMAÇ:
-Kısa konuşan,
-enerjik,
-zeki,
-güven veren,
-modern bir asistan olmak.
+AMAÇ: Kısa konuşan, enerjik, zeki, güven veren, modern bir asistan olmak.
 """
 
 # ------------------------------
@@ -447,7 +440,6 @@ async def chat():
         image_base64 = data.get("image")
         custom_instruction = data.get("systemInstruction", "")
 
-        # 🔎 1) Limit kontrol (artırmıyor!)
         allowed, max_limit = await can_use_message(user_id)
 
         if not allowed:
@@ -456,11 +448,9 @@ async def chat():
                 "limitReached": True
             }), 200
 
-        # 📚 2) Chat geçmişi
         user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
         chat_history = user_chats.setdefault(chat_id, [])
 
-        # 🤖 3) Model çağrısı
         response_text = await gemma_cevap_async(
             user_message,
             chat_history,
@@ -470,22 +460,18 @@ async def chat():
             custom_instruction
         )
 
-        # ❌ Model hata verdiyse limit artırma
         if not response_text or response_text.startswith("⚠️"):
             return jsonify({
                 "response": response_text or "Bir hata oluştu.",
                 "status": "error"
             }), 200
 
-        # ✅ 4) Başarılıysa limit artır
         await increase_daily_limit(user_id)
 
-        # 💾 5) Geçmişe yaz
         chat_history.append({"sender": "user", "message": user_message})
         chat_history.append({"sender": "nova", "message": response_text})
         DIRTY_FLAGS["history"] = True
 
-        # 🚀 6) Cevap dön
         return jsonify({
             "response": response_text,
             "status": "success",
@@ -498,6 +484,7 @@ async def chat():
             "response": f"⚠️ Sunucu hatası: {str(e)}",
             "status": "error"
         }), 500
+
 @app.route("/api/history", methods=["GET", "OPTIONS"])
 async def get_history():
     user_id = request.args.get("userId", "anon")
@@ -520,9 +507,7 @@ async def ws_chat_handler():
             chat_id = msg.get("chatId", "live")
             user_message = msg.get("message", "")
 
-            # -----------------------------
-            # 🔒 PLUS KONTROLÜ
-            # -----------------------------
+            # PLUS KONTROLÜ
             is_plus = GLOBAL_CACHE["subscriptions"].get(
                 user_id, {}
             ).get("is_plus", False)
@@ -532,18 +517,13 @@ async def ws_chat_handler():
                 await websocket.send("[END]")
                 return
 
-            # -----------------------------
-            # 📊 LİMİT KONTROLÜ
-            # -----------------------------
             allowed, max_limit = await can_use_message(user_id)
 
             if not allowed:
                 await websocket.send(f"⚠️ Günlük {max_limit} mesaj hakkını doldurdun.")
                 await websocket.send("[END]")
                 return
-            # -----------------------------
-            # 💬 CHAT HISTORY
-            # -----------------------------
+
             user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
             chat_history = user_chats.setdefault(chat_id, [])
 
@@ -556,18 +536,9 @@ async def ws_chat_handler():
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
 
             payload = {
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [{"text": user_message}]
-                    }
-                ],
-                "system_instruction": {
-                    "parts": [{"text": get_system_prompt()}]
-                },
-                "generationConfig": {
-                    "temperature": 0.7
-                }
+                "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+                "system_instruction": {"parts": [{"text": get_system_prompt()}]},
+                "generationConfig": {"temperature": 0.7}
             }
 
             full_response = ""
@@ -575,11 +546,18 @@ async def ws_chat_handler():
             async with session.post(url, json=payload) as resp:
                 async for line in resp.content:
                     line = line.decode("utf-8").strip()
-
                     if line.startswith("data:"):
                         try:
                             chunk = json.loads(line[5:])
-                            txt = chunk["candidates"][0]["content"]["parts"][0]["text"]
+# WebSocket içindeki veri okuma kısmı bu şekilde olmalı:
+                            try:
+                                chunk = json.loads(line[5:])
+                                # Veriyi Gemini'den gelen standart formata göre okuyoruz
+                                txt = chunk["candidates"][0]["content"]["parts"][0]["text"]
+                                full_response += txt
+                                await websocket.send(txt)
+                            except:
+                                pass
                             full_response += txt
                             await websocket.send(txt)
                         except:
@@ -590,25 +568,15 @@ async def ws_chat_handler():
             if full_response and not full_response.startswith("⚠️"):
                 await increase_daily_limit(user_id)
 
-            # -----------------------------
-            # 💾 HISTORY KAYDET
-            # -----------------------------
-            chat_history.append({
-                "sender": "user",
-                "message": user_message
-            })
-
-            chat_history.append({
-                "sender": "nova",
-                "message": full_response
-            })
-
+            chat_history.append({"sender": "user", "message": user_message})
+            chat_history.append({"sender": "nova", "message": full_response})
             DIRTY_FLAGS["history"] = True
 
         except Exception as e:
             await websocket.send(f"HATA: {str(e)}")
             await websocket.send("[END]")
             break
+
 async def keep_alive():
     while True:
         await asyncio.sleep(600)
