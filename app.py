@@ -168,16 +168,18 @@ user_data = {}
 
 @app.route('/api/user_status/<user_id>', methods=['GET'])
 async def get_user_status(user_id):
-    if user_id not in user_data:
-        user_data[user_id] = {
-            "isPlus": False,
-            "daily_limit": 0,
-            "last_reset": datetime.now(timezone.utc).isoformat()
-        }
+    # DİKKAT: activate_plus fonksiyonu GLOBAL_CACHE["subscriptions"] kısmını güncelliyor.
+    # Bu yüzden burayı oradan okuyacak şekilde değiştirmeliyiz:
     
+    is_plus = GLOBAL_CACHE.get("subscriptions", {}).get(user_id, {}).get("is_plus", False)
+    
+    # Eğer GLOBAL_CACHE'de yoksa user_data'ya da bir bakalım (garanti olsun)
+    if not is_plus:
+        is_plus = user_data.get(user_id, {}).get("is_plus", False)
+
     return jsonify({
         "userId": user_id,
-        "isPlus": user_data[user_id].get("isPlus", False)
+        "isPlus": is_plus
     }), 200
 
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
