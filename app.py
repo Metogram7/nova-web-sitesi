@@ -13,11 +13,6 @@ from quart_cors import cors
 from werkzeug.datastructures import FileStorage
 
 # --- E-Posta Kütüphaneleri ---
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 import aiofiles
 
 # --- Firebase Kütüphaneleri ---
@@ -67,10 +62,8 @@ session: aiohttp.ClientSession | None = None
 # ------------------------------------
 # AYARLAR VE LİMİTLER
 # ------------------------------------
-MAIL_ADRES = "nova.ai.v4.2@gmail.com"
-MAIL_SIFRE = os.getenv("MAIL_SIFRE", "gamtdoiralefaruk")
-ALICI_ADRES = MAIL_ADRES
-MAX_DAILY_QUESTIONS = 50 
+FREE_LIMIT = 20
+PLUS_LIMIT = 40
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -82,6 +75,7 @@ LAST_SEEN_FILE = get_path("last_seen.json")
 CACHE_FILE = get_path("cache.json")
 TOKENS_FILE = get_path("tokens.json")
 LIMITS_FILE = get_path("daily_limits.json")
+SUBSCRIPTIONS_FILE = get_path("subscriptions.json")
 
 # RAM Önbelleği
 GLOBAL_CACHE = {
@@ -89,14 +83,16 @@ GLOBAL_CACHE = {
     "last_seen": {},
     "api_cache": {},
     "tokens": [],
-    "daily_limits": {}
+    "daily_limits": {},
+    "subscriptions": {}
 }
 DIRTY_FLAGS = {
     "history": False,
     "last_seen": False,
     "api_cache": False,
     "tokens": False,
-    "daily_limits": False
+    "daily_limits": False,
+    "subscriptions": False
 }
 
 # ------------------------------------
@@ -177,30 +173,50 @@ async def should_search_internet(message: str, session: aiohttp.ClientSession):
 # ------------------------------------
 # LİMİT KONTROL
 # ------------------------------------
-limit_lock = asyncio.Lock()
 
-async def check_daily_limit(user_id):
+async def can_use_message(user_id):
     async with limit_lock:
         tr_tz = timezone(timedelta(hours=3))
         now = datetime.now(tr_tz)
-        user_limit = GLOBAL_CACHE["daily_limits"].get(user_id, {"count": 0, "last_reset": now.isoformat()})
-        
+
+        is_plus = GLOBAL_CACHE["subscriptions"].get(user_id, {}).get("is_plus", False)
+        max_limit = PLUS_LIMIT if is_plus else FREE_LIMIT
+
+        user_limit = GLOBAL_CACHE["daily_limits"].get(
+            user_id,
+            {"count": 0, "last_reset": now.isoformat()}
+        )
+
         try:
-            last_reset = datetime.fromisoformat(user_limit.get("last_reset", now.isoformat()))
-        except ValueError:
+            last_reset = datetime.fromisoformat(user_limit.get("last_reset"))
+        except:
             last_reset = now
 
         if now.date() > last_reset.date():
             user_limit = {"count": 0, "last_reset": now.isoformat()}
-        
-        if user_limit["count"] >= MAX_DAILY_QUESTIONS:
-            return False
-        
+
+        if user_limit["count"] >= max_limit:
+            return False, max_limit
+
+        return True, max_limit
+
+async def increase_daily_limit(user_id):
+    async with limit_lock:
+        tr_tz = timezone(timedelta(hours=3))
+        now = datetime.now(tr_tz)
+
+        user_limit = GLOBAL_CACHE["daily_limits"].get(
+            user_id,
+            {"count": 0, "last_reset": now.isoformat()}
+        )
+
         user_limit["count"] += 1
         user_limit["last_reset"] = now.isoformat()
+
         GLOBAL_CACHE["daily_limits"][user_id] = user_limit
         DIRTY_FLAGS["daily_limits"] = True
-        return True
+        
+limit_lock = asyncio.Lock()
 
 # ------------------------------------
 # YAŞAM DÖNGÜSÜ
@@ -227,7 +243,7 @@ async def cleanup():
 # ------------------------------------
 async def load_data_to_memory():
     try:
-        files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE, "api_cache": CACHE_FILE, "tokens": TOKENS_FILE, "daily_limits": LIMITS_FILE}
+        files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE, "api_cache": CACHE_FILE, "tokens": TOKENS_FILE, "daily_limits": LIMITS_FILE, "subscriptions": SUBSCRIPTIONS_FILE}
         for key, filename in files_map.items():
             if os.path.exists(filename):
                 async with aiofiles.open(filename, mode='r', encoding='utf-8') as f:
@@ -244,7 +260,14 @@ async def background_save_worker():
         await save_memory_to_disk()
 
 async def save_memory_to_disk(force=False):
-    files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE, "api_cache": CACHE_FILE, "tokens": TOKENS_FILE, "daily_limits": LIMITS_FILE}
+    files_map = {
+        "history": HISTORY_FILE,
+        "last_seen": LAST_SEEN_FILE,
+        "api_cache": CACHE_FILE,
+        "tokens": TOKENS_FILE,
+        "daily_limits": LIMITS_FILE,
+        "subscriptions": SUBSCRIPTIONS_FILE
+    }
     for key, filename in files_map.items():
         if DIRTY_FLAGS[key] or force:
             try:
@@ -379,41 +402,68 @@ async def home():
 
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 async def chat():
-    data = await request.get_json()
-    if not data: return jsonify({"error": "Geçersiz JSON"}), 400
+    try:
+        data = await request.get_json()
+        if not data:
+            return jsonify({"error": "Geçersiz JSON"}), 400
 
-    user_id = data.get("userId", "anon")
-    chat_id = data.get("currentChat", "default")
-    user_message = data.get("message", "")
-    image_base64 = data.get("image")
-    custom_instruction = data.get("systemInstruction", "") 
+        user_id = data.get("userId", "anon")
+        chat_id = data.get("currentChat", "default")
+        user_message = data.get("message", "")
+        image_base64 = data.get("image")
+        custom_instruction = data.get("systemInstruction", "")
 
-    if not await check_daily_limit(user_id):
-        return jsonify({"response": "⚠️ Günlük limit doldu."}), 200
+        # 🔎 1) Limit kontrol (artırmıyor!)
+        allowed, max_limit = await can_use_message(user_id)
 
-    user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
-    chat_history = user_chats.setdefault(chat_id, [])
+        if not allowed:
+            return jsonify({
+                "response": f"⚠️ Günlük {max_limit} mesaj hakkını doldurdun. Yarın yenilecek.",
+                "limitReached": True
+            }), 200
 
-    response_text = await gemma_cevap_async(
-        user_message, 
-        chat_history, 
-        session, 
-        user_id, 
-        image_base64, 
-        custom_instruction
-    )
+        # 📚 2) Chat geçmişi
+        user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
+        chat_history = user_chats.setdefault(chat_id, [])
 
-    chat_history.append({"sender": "user", "message": user_message})
-    chat_history.append({"sender": "nova", "message": response_text})
-    DIRTY_FLAGS["history"] = True
+        # 🤖 3) Model çağrısı
+        response_text = await gemma_cevap_async(
+            user_message,
+            chat_history,
+            session,
+            user_id,
+            image_base64,
+            custom_instruction
+        )
 
-    return jsonify({
-        "response": response_text, 
-        "status": "success",
-        "timestamp": datetime.now().isoformat(),
-        "model": GEMINI_MODEL_NAME
-    }), 200
+        # ❌ Model hata verdiyse limit artırma
+        if not response_text or response_text.startswith("⚠️"):
+            return jsonify({
+                "response": response_text or "Bir hata oluştu.",
+                "status": "error"
+            }), 200
 
+        # ✅ 4) Başarılıysa limit artır
+        await increase_daily_limit(user_id)
+
+        # 💾 5) Geçmişe yaz
+        chat_history.append({"sender": "user", "message": user_message})
+        chat_history.append({"sender": "nova", "message": response_text})
+        DIRTY_FLAGS["history"] = True
+
+        # 🚀 6) Cevap dön
+        return jsonify({
+            "response": response_text,
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "model": GEMINI_MODEL_NAME
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "response": f"⚠️ Sunucu hatası: {str(e)}",
+            "status": "error"
+        }), 500
 @app.route("/api/history", methods=["GET", "OPTIONS"])
 async def get_history():
     user_id = request.args.get("userId", "anon")
@@ -426,49 +476,105 @@ async def get_history():
 @app.websocket("/ws/chat")
 async def ws_chat_handler():
     await websocket.accept()
+
     while True:
         try:
             raw_data = await websocket.receive()
             msg = json.loads(raw_data)
-            
+
             user_id = msg.get("userId", "anon")
             chat_id = msg.get("chatId", "live")
             user_message = msg.get("message", "")
-            
+
+            # -----------------------------
+            # 🔒 PLUS KONTROLÜ
+            # -----------------------------
+            is_plus = GLOBAL_CACHE["subscriptions"].get(
+                user_id, {}
+            ).get("is_plus", False)
+
+            if not is_plus:
+                await websocket.send("⚠️ Live Mod sadece Nova Plus üyelerine açık.")
+                await websocket.send("[END]")
+                return
+
+            # -----------------------------
+            # 📊 LİMİT KONTROLÜ
+            # -----------------------------
+            allowed, max_limit = await can_use_message(user_id)
+
+            if not allowed:
+                await websocket.send(f"⚠️ Günlük {max_limit} mesaj hakkını doldurdun.")
+                await websocket.send("[END]")
+                return
+            # -----------------------------
+            # 💬 CHAT HISTORY
+            # -----------------------------
             user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
             chat_history = user_chats.setdefault(chat_id, [])
 
             key = await get_next_gemini_key()
+            if not key:
+                await websocket.send("⚠️ API anahtarı bulunamadı.")
+                await websocket.send("[END]")
+                return
+
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
-            
+
             payload = {
-                "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-                "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-                "generationConfig": {"temperature": 0.7}
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": user_message}]
+                    }
+                ],
+                "system_instruction": {
+                    "parts": [{"text": get_system_prompt()}]
+                },
+                "generationConfig": {
+                    "temperature": 0.7
+                }
             }
 
             full_response = ""
+
             async with session.post(url, json=payload) as resp:
                 async for line in resp.content:
                     line = line.decode("utf-8").strip()
+
                     if line.startswith("data:"):
                         try:
                             chunk = json.loads(line[5:])
                             txt = chunk["candidates"][0]["content"]["parts"][0]["text"]
                             full_response += txt
                             await websocket.send(txt)
-                        except: pass
+                        except:
+                            pass
 
             await websocket.send("[END]")
-            chat_history.append({"sender": "user", "message": user_message})
-            chat_history.append({"sender": "nova", "message": full_response})
+            
+            if full_response and not full_response.startswith("⚠️"):
+                await increase_daily_limit(user_id)
+
+            # -----------------------------
+            # 💾 HISTORY KAYDET
+            # -----------------------------
+            chat_history.append({
+                "sender": "user",
+                "message": user_message
+            })
+
+            chat_history.append({
+                "sender": "nova",
+                "message": full_response
+            })
+
             DIRTY_FLAGS["history"] = True
 
         except Exception as e:
             await websocket.send(f"HATA: {str(e)}")
             await websocket.send("[END]")
             break
-
 async def keep_alive():
     while True:
         await asyncio.sleep(600)
