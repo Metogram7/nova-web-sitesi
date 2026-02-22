@@ -63,7 +63,7 @@ session: aiohttp.ClientSession | None = None
 # AYARLAR VE LİMİTLER
 # ------------------------------------
 FREE_LIMIT = 20
-PLUS_LIMIT = 40
+PLUS_LIMIT = 140
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -192,14 +192,35 @@ async def can_use_message(user_id):
         except:
             last_reset = now
 
+async def can_use_message(user_id):
+    async with limit_lock:
+        tr_tz = timezone(timedelta(hours=3))
+        now = datetime.now(tr_tz)
+
+        is_plus = GLOBAL_CACHE["subscriptions"].get(user_id, {}).get("is_plus", False)
+        max_limit = PLUS_LIMIT if is_plus else FREE_LIMIT
+
+        user_limit = GLOBAL_CACHE["daily_limits"].get(
+            user_id,
+            {"count": 0, "last_reset": now.isoformat()}
+        )
+
+        try:
+            last_reset = datetime.fromisoformat(user_limit.get("last_reset"))
+        except:
+            last_reset = now
+
+        # Gün değiştiyse resetle
         if now.date() > last_reset.date():
             user_limit = {"count": 0, "last_reset": now.isoformat()}
+            GLOBAL_CACHE["daily_limits"][user_id] = user_limit
+            DIRTY_FLAGS["daily_limits"] = True
 
+        # Limit kontrolü
         if user_limit["count"] >= max_limit:
             return False, max_limit
 
         return True, max_limit
-
 async def increase_daily_limit(user_id):
     async with limit_lock:
         tr_tz = timezone(timedelta(hours=3))
