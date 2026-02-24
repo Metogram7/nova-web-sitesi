@@ -144,7 +144,8 @@ async def fetch_live_data(query: str):
         "q": search_query,
         "lr": "lang_tr",
         "num": 5,
-        "safe": "active"
+        "safe": "active",
+        "sort": "date"
     }
     try:
         async with aiohttp.ClientSession() as search_session:
@@ -374,6 +375,7 @@ Eğer mesaj içinde <WEB_DATA> etiketi varsa:
 - Eski bilgini kullanma.
 - Çelişki varsa WEB_DATA kazanır.
 - Güncel sorularda WEB_DATA zorunludur.
+- eğer cevap çok karmaşıksa tablo çıkarıp ver .
 ... (diğer kuralların) ...
 
 EĞER <WEB_DATA> BOŞ GELİRSE:
