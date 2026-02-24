@@ -133,13 +133,12 @@ async def fetch_live_data(query: str):
         return "⚠️ İNTERNET ARAMA AYARLARI EKSİK."
         
     url = "https://www.googleapis.com/customsearch/v1"
-# fetch_live_data fonksiyonu içindeki sorguyu şu şekilde güncelle:
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
-        "q": f"{query} maç sonucu skor 2026", # Yılı dinamik eklemek hata payını düşürür
+        "q": query, # Sabit "son maç sonucu" eklemesini kaldır, sadece gelen soruyu sor
         "lr": "lang_tr",
-        "num": 5, # 10 sonuç kalabalık yapabilir, en güncel 5 tanesi genelde yeterlidir
+        "num": 5,
         "safe": "active"
     }
     try:
@@ -364,7 +363,11 @@ Eğer mesaj içinde <WEB_DATA> etiketi varsa:
 - Eski bilgini kullanma.
 - Çelişki varsa WEB_DATA kazanır.
 - Güncel sorularda WEB_DATA zorunludur.
+... (diğer kuralların) ...
 
+EĞER <WEB_DATA> BOŞ GELİRSE:
+- "Verilerimde yok" demek yerine, "Şu an bu bilgiye ulaşamadım ama genel olarak..." diyerek yardımcı olmaya çalış.
+- Ama iftar saati veya maç skoru gibi kesin bilgi gerektiren konularda veriye ulaşamazsan, kullanıcıya internet bağlantısını veya arama motoru ayarlarını kontrol etmesini kibarca söyle.
 ÖNEMLİ TALİMATLAR:
 1- <WEB_DATA> içindeki bilgiler günceldir. Eğer orada bir skor veya saat varsa, kendi eski bilgilerini UNUT ve sadece oradaki veriyi söyle.
 2- Eğer kullanıcı bir şehrin iftar/sahur vaktini soruyorsa ve <WEB_DATA> içinde saat yazıyorsa, aradaki farkı hesaplayıp söyle.
