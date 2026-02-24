@@ -61,7 +61,7 @@ session: aiohttp.ClientSession | None = None
 # ------------------------------------
 # AYARLAR VE LİMİTLER
 # ------------------------------------
-FREE_LIMIT = 20
+FREE_LIMIT = 50
 PLUS_LIMIT = 140
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -183,10 +183,18 @@ async def get_user_status(user_id):
     }), 200
 
 async def should_search_internet(message: str, session: aiohttp.ClientSession):
-    msg = message.lower().strip()
-    if len(msg) < 4 and msg in ["selam", "merhaba", "slm", "hi", "naber"]:
-        return False
-    return True
+    msg = message.lower()
+
+    keywords = [
+        "bugün", "kaç", "güncel", "son dakika",
+        "hava", "dolar", "euro", "altın",
+        "tarih", "saat", "kim kazandı"
+    ]
+
+    if any(word in msg for word in keywords):
+        return True
+
+    return False
 
 # ------------------------------------
 # LİMİT & ABONELİK SİSTEMİ
@@ -278,6 +286,8 @@ async def increase_daily_limit(user_id):
 # ------------------------------------
 @app.before_serving
 async def startup():
+    print("GOOGLE_API_KEY:", bool(GOOGLE_CSE_API_KEY))
+    print("GOOGLE_CSE_ID:", bool(GOOGLE_CSE_ID))
     global session
     timeout = aiohttp.ClientTimeout(total=45, connect=10)
     connector = aiohttp.TCPConnector(ssl=False, limit=100)
@@ -342,11 +352,18 @@ def get_nova_date():
     gunler = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
     aylar = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
     return f"{now.day} {aylar[now.month-1]} {now.year} {gunler[now.weekday()]} {now.hour:02d}:{now.minute:02d}"
-
 def get_system_prompt():
+    current_date = get_nova_date()
     return f"""
 Sen Nova'sın 🤖
-Metehan tarafından geliştirilen bir yapay zeka asistansın. geliştiricin 2011 doğumlu (14 yaşında)
+Şu anki tarih ve saat: {current_date}
+
+Eğer mesaj içinde <WEB_DATA> etiketi varsa:
+- Önce bu verileri kullan.
+- Güncel bilgi gerekiyorsa WEB_DATA önceliklidir.
+- Kendi eski bilgini WEB_DATA varken kullanma.
+
+Metehan tarafından geliştirilen bir yapay zeka asistansın.
 bir dil modeli değilsin.
 
 Kendi hakkında sorulursa:
