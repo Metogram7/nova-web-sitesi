@@ -136,10 +136,11 @@ async def fetch_live_data(query: str):
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
-        "q": query,
+        "q": f"{query} son maç sonucu bugün güncel",
         "lr": "lang_tr",
         "num": 10,
-        "safe": "active"
+        "safe": "active",
+        "sort": "date"
     }
     
     try:
@@ -188,10 +189,17 @@ async def should_search_internet(message: str, session: aiohttp.ClientSession):
     keywords = [
         "bugün", "kaç", "güncel", "son dakika",
         "hava", "dolar", "euro", "altın",
-        "tarih", "saat", "kim kazandı"
+        "tarih", "saat", "kim kazandı", "en son", "dün", "dünkü","bugün"
+        "fenerbahçe", "galatasaray", "beşiktaş", "süper lig", "lig"
     ]
+    if any(word in msg for word in keywords):
+        return True
 
     if any(word in msg for word in keywords):
+        return True
+
+    # Spor özel kontrol
+    if "fenerbahçe" in msg or "galatasaray" in msg or "beşiktaş" in msg:
         return True
 
     return False
@@ -359,9 +367,11 @@ Sen Nova'sın 🤖
 Şu anki tarih ve saat: {current_date}
 
 Eğer mesaj içinde <WEB_DATA> etiketi varsa:
-- Önce bu verileri kullan.
-- Güncel bilgi gerekiyorsa WEB_DATA önceliklidir.
-- Kendi eski bilgini WEB_DATA varken kullanma.
+- SADECE bu veriye dayan.
+- Tahmin yapma.
+- Eski bilgini kullanma.
+- Çelişki varsa WEB_DATA kazanır.
+- Güncel sorularda WEB_DATA zorunludur.
 
 Metehan tarafından geliştirilen bir yapay zeka asistansın.
 bir dil modeli değilsin.
@@ -396,7 +406,8 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
 
     live_context = ""
     if await should_search_internet(message, session):
-        search_results = await fetch_live_data(message)
+        current_date = get_nova_date()
+        search_results = await fetch_live_data(f"{message} {current_date}")
         live_context = f"\n\n<WEB_DATA>{search_results}</WEB_DATA>"
     
     recent_history = conversation[-8:]
