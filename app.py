@@ -133,16 +133,15 @@ async def fetch_live_data(query: str):
         return "⚠️ İNTERNET ARAMA AYARLARI EKSİK."
         
     url = "https://www.googleapis.com/customsearch/v1"
+# fetch_live_data fonksiyonu içindeki sorguyu şu şekilde güncelle:
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
-        "q": f"{query} son maç sonucu bugün güncel",
+        "q": f"{query} maç sonucu skor 2026", # Yılı dinamik eklemek hata payını düşürür
         "lr": "lang_tr",
-        "num": 10,
-        "safe": "active",
-        "sort": "date"
+        "num": 5, # 10 sonuç kalabalık yapabilir, en güncel 5 tanesi genelde yeterlidir
+        "safe": "active"
     }
-    
     try:
         async with aiohttp.ClientSession() as search_session:
             async with search_session.get(url, params=params, timeout=10) as resp:
@@ -193,13 +192,6 @@ async def should_search_internet(message: str, session: aiohttp.ClientSession):
         "fenerbahçe", "galatasaray", "beşiktaş", "süper lig", "lig"
     ]
     if any(word in msg for word in keywords):
-        return True
-
-    if any(word in msg for word in keywords):
-        return True
-
-    # Spor özel kontrol
-    if "fenerbahçe" in msg or "galatasaray" in msg or "beşiktaş" in msg:
         return True
 
     return False
@@ -373,6 +365,11 @@ Eğer mesaj içinde <WEB_DATA> etiketi varsa:
 - Çelişki varsa WEB_DATA kazanır.
 - Güncel sorularda WEB_DATA zorunludur.
 
+ÖNEMLİ TALİMATLAR:
+1- <WEB_DATA> içindeki bilgiler günceldir. Eğer orada bir skor veya saat varsa, kendi eski bilgilerini UNUT ve sadece oradaki veriyi söyle.
+2- Eğer kullanıcı bir şehrin iftar/sahur vaktini soruyorsa ve <WEB_DATA> içinde saat yazıyorsa, aradaki farkı hesaplayıp söyle.
+3- Maç skorlarında "kim kazandı" sorusuna net yanıt ver.
+
 Metehan tarafından geliştirilen bir yapay zeka asistansın.
 bir dil modeli değilsin.
 
@@ -406,8 +403,7 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
 
     live_context = ""
     if await should_search_internet(message, session):
-        current_date = get_nova_date()
-        search_results = await fetch_live_data(f"{message} {current_date}")
+        search_results = await fetch_live_data(message)
         live_context = f"\n\n<WEB_DATA>{search_results}</WEB_DATA>"
     
     recent_history = conversation[-8:]
