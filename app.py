@@ -133,17 +133,22 @@ async def fetch_live_data(query: str):
         return "⚠️ İNTERNET ARAMA AYARLARI EKSİK."
         
     url = "https://www.googleapis.com/customsearch/v1"
+    if any(team in query.lower() for team in ["fenerbahçe", "galatasaray", "beşiktaş"]):
+        search_query = f"{query} son maç sonucu skor"
+    else:
+        search_query = query
+
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
-        "q": query, # Sabit "son maç sonucu" eklemesini kaldır, sadece gelen soruyu sor
+        "q": search_query,
         "lr": "lang_tr",
         "num": 5,
         "safe": "active"
     }
     try:
         async with aiohttp.ClientSession() as search_session:
-            async with search_session.get(url, params=params, timeout=10) as resp:
+            async with session.get(url, params=params, timeout=10) as resp:
                 if resp.status != 200:
                     return "Arama API hatası, kendi bilgilerini kullan."
                 data = await resp.json()
@@ -187,10 +192,16 @@ async def should_search_internet(message: str, session: aiohttp.ClientSession):
     keywords = [
         "bugün", "kaç", "güncel", "son dakika",
         "hava", "dolar", "euro", "altın",
-        "tarih", "saat", "kim kazandı", "en son", "dün", "dünkü","bugün"
-        "fenerbahçe", "galatasaray", "beşiktaş", "süper lig", "lig"
+        "tarih", "saat", "kim kazandı", "en son",
+        "dün", "dünkü", "bugün",
+        "fenerbahçe", "galatasaray", "beşiktaş",
+        "süper lig", "lig", "maç", "skor"
     ]
     if any(word in msg for word in keywords):
+        return True
+
+    # Spor soruları zorunlu internet
+    if "maç" in msg or "skor" in msg:
         return True
 
     return False
@@ -576,22 +587,27 @@ async def ws_chat_handler():
                 async for line in resp.content:
                     line = line.decode("utf-8").strip()
                     if line.startswith("data:"):
-                        try:
                             chunk = json.loads(line[5:])
-# WebSocket içindeki veri okuma kısmı bu şekilde olmalı:
                             try:
                                 chunk = json.loads(line[5:])
-                                # Veriyi Gemini'den gelen standart formata göre okuyoruz
-                                txt = chunk["candidates"][0]["content"]["parts"][0]["text"]
+
+                                candidates = chunk.get("candidates", [])
+                                if not candidates:
+                                    continue
+
+                                parts = candidates[0].get("content", {}).get("parts", [])
+                                if not parts:
+                                    continue
+
+                                txt = parts[0].get("text")
+                                if not txt:
+                                    continue
+
                                 full_response += txt
                                 await websocket.send(txt)
-                            except:
-                                pass
-                            full_response += txt
-                            await websocket.send(txt)
-                        except:
-                            pass
 
+                            except json.JSONDecodeError:
+                                continue
             await websocket.send("[END]")
             
             if full_response and not full_response.startswith("⚠️"):
