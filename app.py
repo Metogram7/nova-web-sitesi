@@ -112,14 +112,37 @@ print(f"✅ Gemini Key Sistemi Başlatıldı | Toplam Key: {len(GEMINI_API_KEYS)
 CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 
-async def get_next_gemini_key():
+# 429 olan key'leri geçici olarak kara listeye al
+KEY_COOLDOWNS: dict[int, float] = {}   # index → unix_timestamp (ne zaman tekrar dene)
+KEY_COOLDOWN_SECS = 60                 # 1 dakika bekle
+
+async def get_next_gemini_key() -> str | None:
+    """Round-robin + 429 cooldown yönetimi ile bir sonraki çalışan key'i döndür."""
     global CURRENT_KEY_INDEX
     async with KEY_LOCK:
         if not GEMINI_API_KEYS:
             return None
-        key = GEMINI_API_KEYS[CURRENT_KEY_INDEX]
-        CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
-        return key
+        now = asyncio.get_event_loop().time()
+        # Tüm key'leri dola; cooldown'da olmayanı seç
+        for _ in range(len(GEMINI_API_KEYS)):
+            idx = CURRENT_KEY_INDEX
+            CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
+            cooldown_until = KEY_COOLDOWNS.get(idx, 0)
+            if now >= cooldown_until:
+                return GEMINI_API_KEYS[idx]
+        # Hepsi cooldown'daysa en yakın çıkacak key'i seç
+        best_idx = min(KEY_COOLDOWNS, key=lambda i: KEY_COOLDOWNS.get(i, 0))
+        return GEMINI_API_KEYS[best_idx]
+
+async def mark_key_rate_limited(key: str):
+    """429 alan key'i 60 saniyeliğine blacklist'e ekle."""
+    async with KEY_LOCK:
+        try:
+            idx = GEMINI_API_KEYS.index(key)
+            KEY_COOLDOWNS[idx] = asyncio.get_event_loop().time() + KEY_COOLDOWN_SECS
+            print(f"⏳ Key #{idx} rate-limited, {KEY_COOLDOWN_SECS}s cooldown.")
+        except ValueError:
+            pass
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
@@ -149,7 +172,7 @@ async def fetch_live_data(query: str):
     }
     try:
         async with aiohttp.ClientSession() as search_session:
-            async with session.get(url, params=params, timeout=10) as resp:
+            async with search_session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     return "Arama API hatası, kendi bilgilerini kullan."
                 data = await resp.json()
@@ -187,23 +210,48 @@ async def get_user_status(user_id):
         "isPlus": is_plus
     }), 200
 
-async def should_search_internet(message: str, session: aiohttp.ClientSession):
-    msg = message.lower()
+async def should_search_internet(message: str, sess: aiohttp.ClientSession) -> bool:
+    """
+    Basit bir kural + bağlam motoru ile internet araması gerekip gerekmediğine karar verir.
+    Eski sistemin aksine, sadece kelime değil AMAÇ'ı analiz eder.
+    """
+    msg = message.lower().strip()
 
-    keywords = [
-        "bugün", "kaç", "güncel", "son dakika",
-        "hava", "dolar", "euro", "altın",
-        "tarih", "saat", "kim kazandı", "en son",
-        "dün", "dünkü", "bugün",
-        "fenerbahçe", "galatasaray", "beşiktaş",
-        "süper lig", "lig", "maç", "skor"
+    # --- ASLA arama yapma (genel soru / fikir / tarihsel) ---
+    no_search_patterns = [
+        "en iyi", "sence", "bence", "fikrin", "düşünüyor", "düşünüyorsun",
+        "nasıl yapılır", "ne demek", "anlamı", "tarihçe", "hakkında bilgi ver",
+        "anlat", "açıkla", "nedir", "nelerdir", "hangi", "öneri", "tavsiye",
+        "karşılaştır", "fark nedir", "neden", "niye", "kim daha iyi",
     ]
-    if any(word in msg for word in keywords):
-        return True
+    if any(p in msg for p in no_search_patterns):
+        return False
 
-    # Spor soruları zorunlu internet
-    if "maç" in msg or "skor" in msg:
-        return True
+    # --- KESİNLİKLE arama yap (gerçek zamanlı veri gerektiren sorgular) ---
+    must_search_patterns = [
+        # Hava durumu
+        r"hava (nasıl|durumu|kaç derece)",
+        # Döviz / borsa
+        r"(dolar|euro|altın|sterlin|kripto|bitcoin|bist).*(kaç|fiyat|kur|bugün)",
+        r"(kaç|fiyat).*(dolar|euro|altın)",
+        # Maç SONUCU (skor, kazan/kaybet)
+        r"(maç|skor|gol).*(sonuç|kaç|bitti|kim kazandı|oyna)",
+        r"(fenerbahçe|galatasaray|beşiktaş|trabzonspor).*(maç|skor|puan|gol|attı|yendi|kazandı|kaybetti)",
+        r"(kim kazandı|kim yendi|bitti mi|oynandı mı|skor kaç)",
+        # Güncel haber
+        r"son dakika",
+        r"bugün.*(haber|ne oldu|gelişme)",
+        # Saat / tarih
+        r"(şu an|şuanda|şimdi|bugün).*(saat|tarih|gün) kaç",
+        r"saat kaç",
+        # İftar / sahur
+        r"(iftar|sahur).*(saat|kaçta|ne zaman)",
+    ]
+
+    import re
+    for pattern in must_search_patterns:
+        if re.search(pattern, msg):
+            return True
 
     return False
 
@@ -392,6 +440,7 @@ bir dil modeli değilsin.
 Kendi hakkında sorulursa:
 "Ben Nova'yım 🤖 Metehan tarafından geliştirildim" dersin.
 Asla Google tarafından geliştirildiğini söylemezsin.
+senin tanıdığın metehan sadece geliştiricin olan metehan olsun!
 
 KONUŞMA TARZI:
 - Enerjik ol ⚡
@@ -416,11 +465,11 @@ AMAÇ: Kısa konuşan, enerjik, zeki, güven veren, modern bir asistan olmak.
 # ------------------------------
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
-async def gemma_cevap_async(message, conversation, session, user_name=None, image_data=None, custom_prompt=""):
+async def gemma_cevap_async(message, conversation, sess, user_name=None, image_data=None, custom_prompt=""):
     if not GEMINI_API_KEYS: return "⚠️ API anahtarı eksik."
 
     live_context = ""
-    if await should_search_internet(message, session):
+    if await should_search_internet(message, sess):
         search_results = await fetch_live_data(message)
         live_context = f"\n\n<WEB_DATA>{search_results}</WEB_DATA>"
     
@@ -436,7 +485,7 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
 
     contents.append({"role": "user", "parts": user_parts})
     
-    final_system_prompt = f"{get_system_prompt()}\n\n[EK_TALIMAT]: {custom_prompt}"
+    final_system_prompt = f"{get_system_prompt()}\n\n[EK_TALIMAT]: {custom_prompt}" if custom_prompt else get_system_prompt()
 
     payload = {
         "contents": contents,
@@ -444,22 +493,30 @@ async def gemma_cevap_async(message, conversation, session, user_name=None, imag
         "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000}
     }
 
-    for _ in range(len(GEMINI_API_KEYS)):
+    tried_keys = set()
+    for attempt in range(len(GEMINI_API_KEYS)):
         key = await get_next_gemini_key()
-        if not key: continue
+        if not key or key in tried_keys: continue
+        tried_keys.add(key)
         try:
             request_url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
-            async with session.post(request_url, json=payload, timeout=40) as resp:
+            async with sess.post(request_url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                elif resp.status == 429:
+                    # Bu key rate-limited, kara listeye al ve bir sonrakine geç
+                    await mark_key_rate_limited(key)
+                    print(f"⚠️ 429 Rate Limit — farklı key deneniyor ({attempt+1}/{len(GEMINI_API_KEYS)})")
+                    continue
                 elif resp.status == 404:
                     fallback_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
-                    async with session.post(fallback_url, json=payload, timeout=40) as resp_f:
+                    async with sess.post(fallback_url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp_f:
                         if resp_f.status == 200:
                             data = await resp_f.json()
                             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Key hatası: {e}")
             continue
 
     return "⚠️ Şu an yoğunluk var, tekrar dener misin?"
@@ -482,7 +539,8 @@ async def chat():
         chat_id = data.get("currentChat", "default")
         user_message = data.get("message", "")
         image_base64 = data.get("image")
-        custom_instruction = data.get("systemInstruction", "")
+        # HTML "systemPrompt" gönderir, Flutter "systemInstruction" — ikisini de destekle
+        custom_instruction = data.get("systemInstruction") or data.get("systemPrompt", "")
 
         allowed, max_limit = await can_use_message(user_id)
 
@@ -498,7 +556,7 @@ async def chat():
         response_text = await gemma_cevap_async(
             user_message,
             chat_history,
-            session,
+            session,   # global aiohttp session
             user_id,
             image_base64,
             custom_instruction
@@ -528,6 +586,22 @@ async def chat():
             "response": f"⚠️ Sunucu hatası: {str(e)}",
             "status": "error"
         }), 500
+
+@app.route("/api/delete_chat", methods=["POST", "OPTIONS"])
+async def delete_chat():
+    try:
+        data = await request.get_json()
+        user_id = data.get("userId", "anon")
+        chat_id = data.get("chatId")
+        if not chat_id:
+            return jsonify({"success": False, "error": "chatId gerekli"}), 400
+        user_chats = GLOBAL_CACHE["history"].get(user_id, {})
+        if chat_id in user_chats:
+            del user_chats[chat_id]
+            DIRTY_FLAGS["history"] = True
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/history", methods=["GET", "OPTIONS"])
 async def get_history():
