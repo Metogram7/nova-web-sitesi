@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import aiohttp
 import random
@@ -9,7 +10,6 @@ import base64
 import sys
 from datetime import datetime, timezone, timedelta
 from quart import Quart, request, jsonify, send_file, websocket
-from quart_cors import cors
 from werkzeug.datastructures import FileStorage
 
 # --- E-Posta Kütüphaneleri ---
@@ -47,15 +47,32 @@ FIREBASE_AVAILABLE = False
 app = Quart(__name__)
 
 # ------------------------------------
-# GÜNCELLENMİŞ CORS AYARLARI (WEB + MOBİL UYUMLU)
+# CORS AYARLARI — Manuel (quart_cors'u bypass ederek garanti çözüm)
 # ------------------------------------
-app = cors(
-    app, 
-    allow_origin="*", 
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept"],
-    allow_credentials=False 
-)
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+    "Access-Control-Max-Age": "86400",
+}
+
+@app.after_request
+async def add_cors_headers(response):
+    for key, value in CORS_HEADERS.items():
+        response.headers[key] = value
+    return response
+
+@app.route("/api/chat", methods=["OPTIONS"])
+@app.route("/api/history", methods=["OPTIONS"])
+@app.route("/api/delete_chat", methods=["OPTIONS"])
+@app.route("/api/activate_plus", methods=["OPTIONS"])
+@app.route("/api/user_status", methods=["OPTIONS"])
+async def handle_options(**kwargs):
+    from quart import Response
+    resp = Response("", status=204)
+    for key, value in CORS_HEADERS.items():
+        resp.headers[key] = value
+    return resp
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
@@ -217,41 +234,44 @@ async def should_search_internet(message: str, sess: aiohttp.ClientSession) -> b
     """
     msg = message.lower().strip()
 
-    # --- ASLA arama yapma (genel soru / fikir / tarihsel) ---
-    no_search_patterns = [
-        "en iyi", "sence", "bence", "fikrin", "düşünüyor", "düşünüyorsun",
-        "nasıl yapılır", "ne demek", "anlamı", "tarihçe", "hakkında bilgi ver",
-        "anlat", "açıkla", "nedir", "nelerdir", "hangi", "öneri", "tavsiye",
-        "karşılaştır", "fark nedir", "neden", "niye", "kim daha iyi",
-    ]
-    if any(p in msg for p in no_search_patterns):
-        return False
 
-    # --- KESİNLİKLE arama yap (gerçek zamanlı veri gerektiren sorgular) ---
+    # --- Önce ZORUNLU arama listesi (bunlar no_search'ten önce gelir) ---
     must_search_patterns = [
+        # Puan durumu / lig tablosu
+        r"puan\s*(durumu|tablosu|sıralaması)",
+        r"(süper\s*lig|tff|1\.?\s*lig|2\.?\s*lig).*(puan|sıra|lider|kaçıncı)",
+        r"(hangi\s*takım|kaçıncı\s*sıra).*(lig|puan)",
+        # Maç sonuçları
+        r"(maç|skor|gol).*(sonuç|kaç|bitti|kim\s*kazandı)",
+        r"(fenerbahçe|galatasaray|beşiktaş|trabzonspor|başakşehir).*(maç|skor|puan|gol|attı|yendi|kazandı|kaybetti|oynadı)",
+        r"(kim\s*kazandı|kim\s*yendi|bitti\s*mi|skor\s*kaç)",
         # Hava durumu
-        r"hava (nasıl|durumu|kaç derece)",
+        r"hava\s*(nasıl|durumu|kaç\s*derece|sıcaklık)",
         # Döviz / borsa
-        r"(dolar|euro|altın|sterlin|kripto|bitcoin|bist).*(kaç|fiyat|kur|bugün)",
-        r"(kaç|fiyat).*(dolar|euro|altın)",
-        # Maç SONUCU (skor, kazan/kaybet)
-        r"(maç|skor|gol).*(sonuç|kaç|bitti|kim kazandı|oyna)",
-        r"(fenerbahçe|galatasaray|beşiktaş|trabzonspor).*(maç|skor|puan|gol|attı|yendi|kazandı|kaybetti)",
-        r"(kim kazandı|kim yendi|bitti mi|oynandı mı|skor kaç)",
+        r"(dolar|euro|altın|sterlin|kripto|bitcoin|bist|borsa).*(kaç|fiyat|kur|bugün|şu\s*an)",
+        r"(kaç\s*lira|fiyatı\s*kaç).*(dolar|euro|altın)",
         # Güncel haber
-        r"son dakika",
-        r"bugün.*(haber|ne oldu|gelişme)",
-        # Saat / tarih
-        r"(şu an|şuanda|şimdi|bugün).*(saat|tarih|gün) kaç",
-        r"saat kaç",
+        r"son\s*dakika",
+        r"bugün.*(haber|ne\s*oldu|gelişme)",
+        # Saat
+        r"saat\s*kaç",
+        r"(şu\s*an|şimdi|bugün).*(saat|tarih)\s*kaç",
         # İftar / sahur
-        r"(iftar|sahur).*(saat|kaçta|ne zaman)",
+        r"(iftar|sahur).*(saat|kaçta|ne\s*zaman)",
     ]
-
-    import re
     for pattern in must_search_patterns:
         if re.search(pattern, msg):
             return True
+
+    # --- Genel/fikir soruları → arama yapma ---
+    no_search_patterns = [
+        "sence", "bence", "fikrin", "düşünüyorsun",
+        "nasıl yapılır", "ne demek", "anlamı", "tarihçe",
+        "anlat", "açıkla", "nedir", "öneri", "tavsiye",
+        "neden", "niye", "kim daha iyi",
+    ]
+    if any(p in msg for p in no_search_patterns):
+        return False
 
     return False
 
