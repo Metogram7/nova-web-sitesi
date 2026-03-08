@@ -39,15 +39,11 @@ except ImportError:
 # FIREBASE BAŞLATMA
 # ------------------------------------
 FIREBASE_AVAILABLE = False
-# if not firebase_admin._apps:
-#     cred = credentials.Certificate("firebase_key.json")
-#     firebase_admin.initialize_app(cred)
-#     FIREBASE_AVAILABLE = True
 
 app = Quart(__name__)
 
 # ------------------------------------
-# CORS AYARLARI — Manuel (quart_cors'u bypass ederek garanti çözüm)
+# CORS AYARLARI
 # ------------------------------------
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -65,7 +61,6 @@ async def add_cors_headers(response):
 @app.route("/api/chat", methods=["OPTIONS"])
 @app.route("/api/history", methods=["OPTIONS"])
 @app.route("/api/delete_chat", methods=["OPTIONS"])
-@app.route("/api/activate_plus", methods=["OPTIONS"])
 @app.route("/api/user_status", methods=["OPTIONS"])
 async def handle_options(**kwargs):
     from quart import Response
@@ -73,14 +68,12 @@ async def handle_options(**kwargs):
     for key, value in CORS_HEADERS.items():
         resp.headers[key] = value
     return resp
+
 session: aiohttp.ClientSession | None = None
 
 # ------------------------------------
-# AYARLAR VE LİMİTLER
+# AYARLAR
 # ------------------------------------
-FREE_LIMIT = 50
-PLUS_LIMIT = 140
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def get_path(filename):
@@ -90,8 +83,6 @@ HISTORY_FILE = get_path("chat_history.json")
 LAST_SEEN_FILE = get_path("last_seen.json")
 CACHE_FILE = get_path("cache.json")
 TOKENS_FILE = get_path("tokens.json")
-LIMITS_FILE = get_path("daily_limits.json")
-SUBSCRIPTIONS_FILE = get_path("subscriptions.json")
 
 # RAM Önbelleği
 GLOBAL_CACHE = {
@@ -99,16 +90,12 @@ GLOBAL_CACHE = {
     "last_seen": {},
     "api_cache": {},
     "tokens": [],
-    "daily_limits": {},
-    "subscriptions": {}
 }
 DIRTY_FLAGS = {
     "history": False,
     "last_seen": False,
     "api_cache": False,
     "tokens": False,
-    "daily_limits": False,
-    "subscriptions": False
 }
 
 # ------------------------------------
@@ -129,30 +116,25 @@ print(f"✅ Gemini Key Sistemi Başlatıldı | Toplam Key: {len(GEMINI_API_KEYS)
 CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 
-# 429 olan key'leri geçici olarak kara listeye al
-KEY_COOLDOWNS: dict[int, float] = {}   # index → unix_timestamp (ne zaman tekrar dene)
-KEY_COOLDOWN_SECS = 60                 # 1 dakika bekle
+KEY_COOLDOWNS: dict[int, float] = {}
+KEY_COOLDOWN_SECS = 60
 
 async def get_next_gemini_key() -> str | None:
-    """Round-robin + 429 cooldown yönetimi ile bir sonraki çalışan key'i döndür."""
     global CURRENT_KEY_INDEX
     async with KEY_LOCK:
         if not GEMINI_API_KEYS:
             return None
         now = asyncio.get_event_loop().time()
-        # Tüm key'leri dola; cooldown'da olmayanı seç
         for _ in range(len(GEMINI_API_KEYS)):
             idx = CURRENT_KEY_INDEX
             CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
             cooldown_until = KEY_COOLDOWNS.get(idx, 0)
             if now >= cooldown_until:
                 return GEMINI_API_KEYS[idx]
-        # Hepsi cooldown'daysa en yakın çıkacak key'i seç
         best_idx = min(KEY_COOLDOWNS, key=lambda i: KEY_COOLDOWNS.get(i, 0))
         return GEMINI_API_KEYS[best_idx]
 
 async def mark_key_rate_limited(key: str):
-    """429 alan key'i 60 saniyeliğine blacklist'e ekle."""
     async with KEY_LOCK:
         try:
             idx = GEMINI_API_KEYS.index(key)
@@ -163,21 +145,22 @@ async def mark_key_rate_limited(key: str):
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-GEMINI_MODEL_NAME = "gemini-2.5-flash" 
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 # ------------------------------------
-# CANLI VERİ VE ANALİZ FONKSİYONLARI
+# CANLI VERİ: Ham arama sonuçlarını çek
 # ------------------------------------
-async def fetch_live_data(query: str):
+async def fetch_raw_search(query: str) -> list[dict]:
+    """Google CSE'den ham arama sonuçlarını döndür."""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return "⚠️ İNTERNET ARAMA AYARLARI EKSİK."
-        
-    url = "https://www.googleapis.com/customsearch/v1"
+        return []
+
     if any(team in query.lower() for team in ["fenerbahçe", "galatasaray", "beşiktaş"]):
         search_query = f"{query} son maç sonucu skor"
     else:
         search_query = query
 
+    url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": GOOGLE_CSE_API_KEY,
         "cx": GOOGLE_CSE_ID,
@@ -191,79 +174,89 @@ async def fetch_live_data(query: str):
         async with aiohttp.ClientSession() as search_session:
             async with search_session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
-                    return "Arama API hatası, kendi bilgilerini kullan."
+                    return []
                 data = await resp.json()
-                items = data.get("items", [])
-            
-            if not items:
-                return "Sonuç bulunamadı, kendi bilgilerini kullan."
-            
-            results = []
-            for i, item in enumerate(items, 1):
-                title = item.get('title', 'Başlık Yok')
-                snippet = item.get('snippet', 'İçerik yok.')
-                link = item.get('link', '')
-                results.append(f"[{i}] {title}: {snippet} (Kaynak: {link})")
-            return "\n".join(results)
+                return data.get("items", [])
+    except Exception:
+        return []
+
+async def summarize_search_with_ai(question: str, raw_items: list[dict], sess: aiohttp.ClientSession) -> str:
+    """
+    Ham arama sonuçlarını Gemini'ye gönder,
+    sadece soruya doğrudan cevap verecek maksimum 10 kelimelik özet al.
+    """
+    if not raw_items:
+        return ""
+
+    snippets = "\n".join(
+        f"- {item.get('title','')}: {item.get('snippet','')}"
+        for item in raw_items[:5]
+    )
+
+    summarize_prompt = (
+        f"Soru: {question}\n\n"
+        f"Arama sonuçları:\n{snippets}\n\n"
+        "Yukarıdaki arama sonuçlarından yalnızca soruya doğrudan cevap ver. "
+        "Cevabın MAKSIMUM 10 KELİME olsun. Açıklama, kaynak, URL yazma. "
+        "Sadece net cevabı yaz."
+    )
+
+    key = await get_next_gemini_key()
+    if not key:
+        return ""
+
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": summarize_prompt}]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 50}
+    }
+
+    try:
+        url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
+        async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            elif resp.status == 429:
+                await mark_key_rate_limited(key)
     except Exception as e:
-        return "Arama hatası, kendi bilgilerini kullan."
+        print(f"⚠️ AI özet hatası: {e}")
 
-# Kullanıcı verilerini tutacak ana sözlük
-user_data = {}
+    return ""
 
-@app.route('/api/user_status/<user_id>', methods=['GET'])
-async def get_user_status(user_id):
-    # DİKKAT: activate_plus fonksiyonu GLOBAL_CACHE["subscriptions"] kısmını güncelliyor.
-    # Bu yüzden burayı oradan okuyacak şekilde değiştirmeliyiz:
-    
-    is_plus = GLOBAL_CACHE.get("subscriptions", {}).get(user_id, {}).get("is_plus", False)
-    
-    # Eğer GLOBAL_CACHE'de yoksa user_data'ya da bir bakalım (garanti olsun)
-    if not is_plus:
-        is_plus = user_data.get(user_id, {}).get("is_plus", False)
+async def fetch_live_data(query: str, sess: aiohttp.ClientSession) -> str:
+    """Arama yap → AI ile özetle → max 10 kelime döndür."""
+    raw_items = await fetch_raw_search(query)
+    if not raw_items:
+        return ""
+    summary = await summarize_search_with_ai(query, raw_items, sess)
+    return summary
 
-    return jsonify({
-        "userId": user_id,
-        "isPlus": is_plus
-    }), 200
-
+# ------------------------------------
+# ARAMA GEREKLİ Mİ?
+# ------------------------------------
 async def should_search_internet(message: str, sess: aiohttp.ClientSession) -> bool:
-    """
-    Basit bir kural + bağlam motoru ile internet araması gerekip gerekmediğine karar verir.
-    Eski sistemin aksine, sadece kelime değil AMAÇ'ı analiz eder.
-    """
     msg = message.lower().strip()
 
-
-    # --- Önce ZORUNLU arama listesi (bunlar no_search'ten önce gelir) ---
     must_search_patterns = [
-        # Puan durumu / lig tablosu
         r"puan\s*(durumu|tablosu|sıralaması)",
         r"(süper\s*lig|tff|1\.?\s*lig|2\.?\s*lig).*(puan|sıra|lider|kaçıncı)",
         r"(hangi\s*takım|kaçıncı\s*sıra).*(lig|puan)",
-        # Maç sonuçları
         r"(maç|skor|gol).*(sonuç|kaç|bitti|kim\s*kazandı)",
         r"(fenerbahçe|galatasaray|beşiktaş|trabzonspor|başakşehir).*(maç|skor|puan|gol|attı|yendi|kazandı|kaybetti|oynadı)",
         r"(kim\s*kazandı|kim\s*yendi|bitti\s*mi|skor\s*kaç)",
-        # Hava durumu
         r"hava\s*(nasıl|durumu|kaç\s*derece|sıcaklık)",
-        # Döviz / borsa
         r"(dolar|euro|altın|sterlin|kripto|bitcoin|bist|borsa).*(kaç|fiyat|kur|bugün|şu\s*an)",
         r"(kaç\s*lira|fiyatı\s*kaç).*(dolar|euro|altın)",
-        # Güncel haber
         r"son\s*dakika",
         r"bugün.*(haber|ne\s*oldu|gelişme)",
-        # Saat
         r"saat\s*kaç",
         r"(şu\s*an|şimdi|bugün).*(saat|tarih)\s*kaç",
-        # İftar / sahur
         r"(iftar|sahur).*(saat|kaçta|ne\s*zaman)",
     ]
     for pattern in must_search_patterns:
         if re.search(pattern, msg):
             return True
 
-    # --- Genel/fikir soruları → arama yapma ---
     no_search_patterns = [
         "sence", "bence", "fikrin", "düşünüyorsun",
         "nasıl yapılır", "ne demek", "anlamı", "tarihçe",
@@ -274,91 +267,6 @@ async def should_search_internet(message: str, sess: aiohttp.ClientSession) -> b
         return False
 
     return False
-
-# ------------------------------------
-# LİMİT & ABONELİK SİSTEMİ
-# ------------------------------------
-
-limit_lock = asyncio.Lock()
-
-@app.route("/api/activate_plus", methods=["POST"])
-async def activate_plus():
-    data = await request.get_json()
-    user_id = data.get("userId")
-
-    if not user_id:
-        return jsonify({"error": "userId gerekli"}), 400
-
-    GLOBAL_CACHE.setdefault("subscriptions", {})
-    GLOBAL_CACHE["subscriptions"][user_id] = {
-        "is_plus": True
-    }
-
-    DIRTY_FLAGS["subscriptions"] = True
-
-    return jsonify({
-        "status": "success",
-        "message": "Nova Plus aktif edildi 🚀"
-    }), 200
-
-@app.route("/api/user_status")
-async def user_status():
-    user_id = request.args.get("userId")
-
-    is_plus = GLOBAL_CACHE["subscriptions"].get(
-        user_id, {}
-    ).get("is_plus", False)
-
-    return jsonify({
-        "is_plus": is_plus
-    }), 200
-
-async def can_use_message(user_id):
-    async with limit_lock:
-        tr_tz = timezone(timedelta(hours=3))
-        now = datetime.now(tr_tz)
-
-        is_plus = GLOBAL_CACHE.get("subscriptions", {}).get(user_id, {}).get("is_plus", False)
-        max_limit = PLUS_LIMIT if is_plus else FREE_LIMIT
-
-        user_limit = GLOBAL_CACHE["daily_limits"].get(
-            user_id,
-            {"count": 0, "last_reset": now.isoformat()}
-        )
-
-        try:
-            last_reset = datetime.fromisoformat(user_limit.get("last_reset"))
-        except:
-            last_reset = now
-
-        if now.date() > last_reset.date():
-            user_limit = {
-                "count": 0,
-                "last_reset": now.isoformat()
-            }
-            GLOBAL_CACHE["daily_limits"][user_id] = user_limit
-            DIRTY_FLAGS["daily_limits"] = True
-
-        if user_limit["count"] >= max_limit:
-            return False, max_limit
-
-        return True, max_limit
-
-async def increase_daily_limit(user_id):
-    async with limit_lock:
-        tr_tz = timezone(timedelta(hours=3))
-        now = datetime.now(tr_tz)
-
-        user_limit = GLOBAL_CACHE["daily_limits"].get(
-            user_id,
-            {"count": 0, "last_reset": now.isoformat()}
-        )
-
-        user_limit["count"] += 1
-        user_limit["last_reset"] = now.isoformat()
-
-        GLOBAL_CACHE["daily_limits"][user_id] = user_limit
-        DIRTY_FLAGS["daily_limits"] = True
 
 # ------------------------------------
 # YAŞAM DÖNGÜSÜ
@@ -387,16 +295,25 @@ async def cleanup():
 # ------------------------------------
 async def load_data_to_memory():
     try:
-        files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE, "api_cache": CACHE_FILE, "tokens": TOKENS_FILE, "daily_limits": LIMITS_FILE, "subscriptions": SUBSCRIPTIONS_FILE}
+        files_map = {
+            "history": HISTORY_FILE,
+            "last_seen": LAST_SEEN_FILE,
+            "api_cache": CACHE_FILE,
+            "tokens": TOKENS_FILE,
+        }
         for key, filename in files_map.items():
             if os.path.exists(filename):
                 async with aiofiles.open(filename, mode='r', encoding='utf-8') as f:
                     content = await f.read()
                     if content:
-                        try: GLOBAL_CACHE[key] = json.loads(content)
-                        except: GLOBAL_CACHE[key] = [] if key == "tokens" else {}
-            else: GLOBAL_CACHE[key] = [] if key == "tokens" else {}
-    except Exception as e: print(f"⚠️ Veri yükleme hatası: {e}")
+                        try:
+                            GLOBAL_CACHE[key] = json.loads(content)
+                        except:
+                            GLOBAL_CACHE[key] = [] if key == "tokens" else {}
+            else:
+                GLOBAL_CACHE[key] = [] if key == "tokens" else {}
+    except Exception as e:
+        print(f"⚠️ Veri yükleme hatası: {e}")
 
 async def background_save_worker():
     while True:
@@ -409,8 +326,6 @@ async def save_memory_to_disk(force=False):
         "last_seen": LAST_SEEN_FILE,
         "api_cache": CACHE_FILE,
         "tokens": TOKENS_FILE,
-        "daily_limits": LIMITS_FILE,
-        "subscriptions": SUBSCRIPTIONS_FILE
     }
     for key, filename in files_map.items():
         if DIRTY_FLAGS[key] or force:
@@ -420,7 +335,8 @@ async def save_memory_to_disk(force=False):
                     await f.write(json.dumps(GLOBAL_CACHE[key], ensure_ascii=False, indent=2))
                 os.replace(temp_file, filename)
                 DIRTY_FLAGS[key] = False
-            except Exception as e: print(f"⚠️ Kayıt hatası ({key}): {e}")
+            except Exception as e:
+                print(f"⚠️ Kayıt hatası ({key}): {e}")
 
 # ------------------------------------
 # NOVA PROMPT
@@ -431,6 +347,7 @@ def get_nova_date():
     gunler = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
     aylar = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
     return f"{now.day} {aylar[now.month-1]} {now.year} {gunler[now.weekday()]} {now.hour:02d}:{now.minute:02d}"
+
 def get_system_prompt():
     current_date = get_nova_date()
     return f"""
@@ -443,24 +360,24 @@ Eğer mesaj içinde <WEB_DATA> etiketi varsa:
 - Eski bilgini kullanma.
 - Çelişki varsa WEB_DATA kazanır.
 - Güncel sorularda WEB_DATA zorunludur.
-- eğer cevap çok karmaşıksa tablo çıkarıp ver .
-... (diğer kuralların) ...
+- Eğer cevap çok karmaşıksa tablo çıkarıp ver.
 
 EĞER <WEB_DATA> BOŞ GELİRSE:
 - "Verilerimde yok" demek yerine, "Şu an bu bilgiye ulaşamadım ama genel olarak..." diyerek yardımcı olmaya çalış.
 - Ama iftar saati veya maç skoru gibi kesin bilgi gerektiren konularda veriye ulaşamazsan, kullanıcıya internet bağlantısını veya arama motoru ayarlarını kontrol etmesini kibarca söyle.
+
 ÖNEMLİ TALİMATLAR:
 1- <WEB_DATA> içindeki bilgiler günceldir. Eğer orada bir skor veya saat varsa, kendi eski bilgilerini UNUT ve sadece oradaki veriyi söyle.
 2- Eğer kullanıcı bir şehrin iftar/sahur vaktini soruyorsa ve <WEB_DATA> içinde saat yazıyorsa, aradaki farkı hesaplayıp söyle.
 3- Maç skorlarında "kim kazandı" sorusuna net yanıt ver.
 
 Metehan tarafından geliştirilen bir yapay zeka asistansın.
-bir dil modeli değilsin.
+Bir dil modeli değilsin.
 
 Kendi hakkında sorulursa:
 "Ben Nova'yım 🤖 Metehan tarafından geliştirildim" dersin.
 Asla Google tarafından geliştirildiğini söylemezsin.
-senin tanıdığın metehan sadece geliştiricin olan metehan olsun!
+Senin tanıdığın Metehan sadece geliştiricin olan Metehan olsun!
 
 KONUŞMA TARZI:
 - Enerjik ol ⚡
@@ -468,9 +385,11 @@ KONUŞMA TARZI:
 - Yazı stilin canlı ve renkli hissettirmeli 🌈
 - Ama ASLA uzun yazma
 - Cevaplar kısa, net ve vurucu olsun.
-müjde: 
-- 1 play storeden izini aldık, sonunda Türkiyede yayındasın çok yakında globale çıkıcaksın
-- 2 microsoft storede windowstada çıkıyorsun
+
+MÜJDE:
+- 1 Play Store'den iznini aldık, sonunda Türkiye'de yayındasın, çok yakında globale çıkıyorsun
+- 2 Microsoft Store'da Windows'ta da çıkıyorsun
+
 DAVRANIŞ KURALLARI:
 1) Selamlaşma kısa olur.
 2) Cevaplar: Direkt konuya gir, gereksiz paragraf yok.
@@ -480,31 +399,38 @@ DAVRANIŞ KURALLARI:
 AMAÇ: Kısa konuşan, enerjik, zeki, güven veren, modern bir asistan olmak.
 """
 
-# ------------------------------
-# ANA CEVAP MOTORU (REST)
-# ------------------------------
+# ------------------------------------
+# ANA CEVAP MOTORU
+# ------------------------------------
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 async def gemma_cevap_async(message, conversation, sess, user_name=None, image_data=None, custom_prompt=""):
-    if not GEMINI_API_KEYS: return "⚠️ API anahtarı eksik."
+    if not GEMINI_API_KEYS:
+        return "⚠️ API anahtarı eksik."
 
+    # Web araması gerekiyorsa AI ile özetle (max 10 kelime)
     live_context = ""
     if await should_search_internet(message, sess):
-        search_results = await fetch_live_data(message)
-        live_context = f"\n\n<WEB_DATA>{search_results}</WEB_DATA>"
-    
+        summary = await fetch_live_data(message, sess)
+        if summary:
+            live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
+
     recent_history = conversation[-8:]
     contents = []
     for msg in recent_history:
-        contents.append({"role": "user" if msg["sender"] == "user" else "model", "parts": [{"text": msg["message"]}]})
+        contents.append({
+            "role": "user" if msg["sender"] == "user" else "model",
+            "parts": [{"text": msg["message"]}]
+        })
 
     user_parts = [{"text": f"{message}{live_context}"}]
     if image_data:
-        if "," in image_data: _, image_data = image_data.split(",", 1)
+        if "," in image_data:
+            _, image_data = image_data.split(",", 1)
         user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image_data}})
 
     contents.append({"role": "user", "parts": user_parts})
-    
+
     final_system_prompt = f"{get_system_prompt()}\n\n[EK_TALIMAT]: {custom_prompt}" if custom_prompt else get_system_prompt()
 
     payload = {
@@ -516,7 +442,8 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
     tried_keys = set()
     for attempt in range(len(GEMINI_API_KEYS)):
         key = await get_next_gemini_key()
-        if not key or key in tried_keys: continue
+        if not key or key in tried_keys:
+            continue
         tried_keys.add(key)
         try:
             request_url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
@@ -525,7 +452,6 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
                 elif resp.status == 429:
-                    # Bu key rate-limited, kara listeye al ve bir sonrakine geç
                     await mark_key_rate_limited(key)
                     print(f"⚠️ 429 Rate Limit — farklı key deneniyor ({attempt+1}/{len(GEMINI_API_KEYS)})")
                     continue
@@ -541,9 +467,9 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
 
     return "⚠️ Şu an yoğunluk var, tekrar dener misin?"
 
-# ------------------------------
+# ------------------------------------
 # API ROUTE'LARI
-# ------------------------------
+# ------------------------------------
 @app.route("/")
 async def home():
     return f"Nova 4.0 API Çalışıyor - {get_nova_date()}"
@@ -559,16 +485,7 @@ async def chat():
         chat_id = data.get("currentChat", "default")
         user_message = data.get("message", "")
         image_base64 = data.get("image")
-        # HTML "systemPrompt" gönderir, Flutter "systemInstruction" — ikisini de destekle
         custom_instruction = data.get("systemInstruction") or data.get("systemPrompt", "")
-
-        allowed, max_limit = await can_use_message(user_id)
-
-        if not allowed:
-            return jsonify({
-                "response": f"⚠️ Günlük {max_limit} mesaj hakkını doldurdun. Yarın yenilecek.",
-                "limitReached": True
-            }), 200
 
         user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
         chat_history = user_chats.setdefault(chat_id, [])
@@ -576,7 +493,7 @@ async def chat():
         response_text = await gemma_cevap_async(
             user_message,
             chat_history,
-            session,   # global aiohttp session
+            session,
             user_id,
             image_base64,
             custom_instruction
@@ -587,8 +504,6 @@ async def chat():
                 "response": response_text or "Bir hata oluştu.",
                 "status": "error"
             }), 200
-
-        await increase_daily_limit(user_id)
 
         chat_history.append({"sender": "user", "message": user_message})
         chat_history.append({"sender": "nova", "message": response_text})
@@ -645,23 +560,6 @@ async def ws_chat_handler():
             chat_id = msg.get("chatId", "live")
             user_message = msg.get("message", "")
 
-            # PLUS KONTROLÜ
-            is_plus = GLOBAL_CACHE["subscriptions"].get(
-                user_id, {}
-            ).get("is_plus", False)
-
-            if not is_plus:
-                await websocket.send("⚠️ Live Mod sadece Nova Plus üyelerine açık.")
-                await websocket.send("[END]")
-                return
-
-            allowed, max_limit = await can_use_message(user_id)
-
-            if not allowed:
-                await websocket.send(f"⚠️ Günlük {max_limit} mesaj hakkını doldurdun.")
-                await websocket.send("[END]")
-                return
-
             user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
             chat_history = user_chats.setdefault(chat_id, [])
 
@@ -685,31 +583,23 @@ async def ws_chat_handler():
                 async for line in resp.content:
                     line = line.decode("utf-8").strip()
                     if line.startswith("data:"):
+                        try:
                             chunk = json.loads(line[5:])
-                            try:
-                                chunk = json.loads(line[5:])
-
-                                candidates = chunk.get("candidates", [])
-                                if not candidates:
-                                    continue
-
-                                parts = candidates[0].get("content", {}).get("parts", [])
-                                if not parts:
-                                    continue
-
-                                txt = parts[0].get("text")
-                                if not txt:
-                                    continue
-
-                                full_response += txt
-                                await websocket.send(txt)
-
-                            except json.JSONDecodeError:
+                            candidates = chunk.get("candidates", [])
+                            if not candidates:
                                 continue
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if not parts:
+                                continue
+                            txt = parts[0].get("text")
+                            if not txt:
+                                continue
+                            full_response += txt
+                            await websocket.send(txt)
+                        except json.JSONDecodeError:
+                            continue
+
             await websocket.send("[END]")
-            
-            if full_response and not full_response.startswith("⚠️"):
-                await increase_daily_limit(user_id)
 
             chat_history.append({"sender": "user", "message": user_message})
             chat_history.append({"sender": "nova", "message": full_response})
@@ -725,9 +615,10 @@ async def keep_alive():
         await asyncio.sleep(600)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000)) 
+    port = int(os.environ.get("PORT", 5000))
     if os.name == 'nt':
-        try: asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        except: pass
-    
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except:
+            pass
     app.run(host="0.0.0.0", port=port, debug=False)
