@@ -143,42 +143,64 @@ async def mark_key_rate_limited(key: str):
         except ValueError:
             pass
 
-GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 # ------------------------------------
-# CANLI VERİ: Ham arama sonuçlarını çek
+# CANLI VERİ: DuckDuckGo (API key'siz)
 # ------------------------------------
 async def fetch_raw_search(query: str) -> list[dict]:
-    """Google CSE'den ham arama sonuçlarını döndür."""
-    if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return []
-
+    """DuckDuckGo Instant Answer API + HTML scrape — hiç API key gerekmez."""
     if any(team in query.lower() for team in ["fenerbahçe", "galatasaray", "beşiktaş"]):
-        search_query = f"{query} son maç sonucu skor"
-    else:
-        search_query = query
+        query = f"{query} son maç sonucu skor"
 
-    url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": GOOGLE_CSE_API_KEY,
-        "cx": GOOGLE_CSE_ID,
-        "q": search_query,
-        "lr": "lang_tr",
-        "num": 5,
-        "safe": "active",
-        "sort": "date"
+    results = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+        "Accept-Language": "tr-TR,tr;q=0.9"
     }
+
+    # 1. DuckDuckGo Instant Answer API (anlık cevaplar: kur, saat vs.)
     try:
-        async with aiohttp.ClientSession() as search_session:
-            async with search_session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
-                return data.get("items", [])
-    except Exception:
-        return []
+        async with aiohttp.ClientSession() as s:
+            params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1", "kl": "tr-tr"}
+            async with s.get("https://api.duckduckgo.com/", params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    if data.get("Answer"):
+                        results.append({"title": "Anlık Cevap", "snippet": data["Answer"]})
+                    if data.get("AbstractText"):
+                        results.append({"title": data.get("Heading", ""), "snippet": data["AbstractText"]})
+                    for topic in data.get("RelatedTopics", [])[:3]:
+                        if isinstance(topic, dict) and topic.get("Text"):
+                            results.append({"title": "", "snippet": topic["Text"]})
+    except Exception as e:
+        print(f"⚠️ DDG Instant API hatası: {e}")
+
+    # 2. DuckDuckGo HTML scrape (güncel haber/kur/skor)
+    if len(results) < 3:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    "https://html.duckduckgo.com/html/",
+                    data={"q": query, "kl": "tr-tr"},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+                        titles   = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
+                        for t, sn in zip(titles[:5], snippets[:5]):
+                            clean_t = re.sub(r'<[^>]+>', "", t).strip()
+                            clean_s = re.sub(r'<[^>]+>', "", sn).strip()
+                            if clean_s:
+                                results.append({"title": clean_t, "snippet": clean_s})
+        except Exception as e:
+            print(f"⚠️ DDG HTML scrape hatası: {e}")
+
+    print(f"🔍 DuckDuckGo: '{query}' → {len(results)} sonuç")
+    return results[:6]
+
 
 async def summarize_search_with_ai(question: str, raw_items: list[dict], sess: aiohttp.ClientSession) -> str:
     """
@@ -196,9 +218,10 @@ async def summarize_search_with_ai(question: str, raw_items: list[dict], sess: a
     summarize_prompt = (
         f"Soru: {question}\n\n"
         f"Arama sonuçları:\n{snippets}\n\n"
-        "Yukarıdaki arama sonuçlarından yalnızca soruya doğrudan cevap ver. "
-        "Cevabın MAKSIMUM 10 KELİME olsun. Açıklama, kaynak, URL yazma. "
-        "Sadece net cevabı yaz."
+        "Bu arama sonuçlarından soruya doğrudan cevap ver. "
+        "MUTLAKA bir cevap üret — 'bulunamadı' veya 'bilmiyorum' YAZMA. "
+        "Sayısal değer varsa (kur, skor, saat) onu yaz. "
+        "Cevabın MAKSIMUM 10 KELİME olsun. Kaynak, URL, açıklama yazma."
     )
 
     key = await get_next_gemini_key()
@@ -226,9 +249,11 @@ async def summarize_search_with_ai(question: str, raw_items: list[dict], sess: a
 async def fetch_live_data(query: str, sess: aiohttp.ClientSession) -> str:
     """Arama yap → AI ile özetle → max 10 kelime döndür."""
     raw_items = await fetch_raw_search(query)
+    print(f"🔍 Arama: '{query}' → {len(raw_items)} sonuç bulundu")
     if not raw_items:
         return ""
     summary = await summarize_search_with_ai(query, raw_items, sess)
+    print(f"📝 AI Özet: '{summary}'")
     return summary
 
 # ------------------------------------
@@ -273,8 +298,7 @@ async def should_search_internet(message: str, sess: aiohttp.ClientSession) -> b
 # ------------------------------------
 @app.before_serving
 async def startup():
-    print("GOOGLE_API_KEY:", bool(GOOGLE_CSE_API_KEY))
-    print("GOOGLE_CSE_ID:", bool(GOOGLE_CSE_ID))
+    print("🦆 DuckDuckGo arama motoru aktif (API key gerekmez)")
     global session
     timeout = aiohttp.ClientTimeout(total=45, connect=10)
     connector = aiohttp.TCPConnector(ssl=False, limit=100)
@@ -362,9 +386,10 @@ Eğer mesaj içinde <WEB_DATA> etiketi varsa:
 - Güncel sorularda WEB_DATA zorunludur.
 - Eğer cevap çok karmaşıksa tablo çıkarıp ver.
 
-EĞER <WEB_DATA> BOŞ GELİRSE:
-- "Verilerimde yok" demek yerine, "Şu an bu bilgiye ulaşamadım ama genel olarak..." diyerek yardımcı olmaya çalış.
-- Ama iftar saati veya maç skoru gibi kesin bilgi gerektiren konularda veriye ulaşamazsan, kullanıcıya internet bağlantısını veya arama motoru ayarlarını kontrol etmesini kibarca söyle.
+EĞER <WEB_DATA> YOKSA VEYA BOŞ GELİRSE:
+- Kendi güncel bilgilerinle cevap ver, "bulunamadı" veya "ulaşamadım" DEME.
+- Döviz, borsa gibi konularda yaklaşık/genel bilgi ver ve "anlık değişebilir" de.
+- Asla "verilerimde yok" veya "bilgiye ulaşamadım" yazma.
 
 ÖNEMLİ TALİMATLAR:
 1- <WEB_DATA> içindeki bilgiler günceldir. Eğer orada bir skor veya saat varsa, kendi eski bilgilerini UNUT ve sadece oradaki veriyi söyle.
