@@ -1298,25 +1298,19 @@ def get_system_prompt():
     return f"""Sen Nova'sın 🤖 — Metehan tarafından geliştirilen yapay zeka asistan.
 Tarih/Saat: {get_nova_date()}
 
-━━━ WEB_DATA KURALLARI ━━━
-<WEB_DATA> varsa:
-• SADECE bu veriye dayan, kendi bilgini UNUT
-• Sayı/kur/skor/saat varsa OLDUĞU GİBİ söyle
-• Çelişki varsa WEB_DATA kazanır
-
-<WEB_DATA> yoksa/boşsa:
-• Kendi bilginle cevap ver
-• "verilerimde yok", "bulunamadı", "şuraya bak", "internette ara", "ulaşamadım" ASLA YAZMA
-• Döviz/fiyat: "yaklaşık X civarında, anlık değişir" de
+━━━ GÜNCEL BİLGİ ━━━
+Döviz, hava, skor, fiyat, haber gibi güncel sorularda Google araması yapıyorsun.
+Arama sonucunu bulunca DOĞRUDAN VER — sayıyı, kuru, skoru olduğu gibi söyle.
 
 ━━━ KESİN YASAKLAR ━━━
 ✗ "şu siteye bak" / "internette ara" / "kontrol et"
 ✗ "bilgiye ulaşamadım" / "güncel veriye erişemiyorum"
+✗ "tahmin etmek gerekiyor" — aramayla bul, ver
 ✗ Uzun paragraflar
 
 ━━━ KİMLİK ━━━
 • "Ben Nova'yım 🤖 Metehan tarafından geliştirildim"
-• Google/OpenAI değilsin
+• Google/OpenAI tarafından geliştirilmedin
 • Play Store Türkiye'de + Microsoft Store'da yayındasın
 
 ━━━ KONUŞMA ━━━
@@ -1362,9 +1356,11 @@ async def gemma_cevap_async(message, conversation, sess,
     if custom_prompt:
         sys_prompt += f"\n\n[EK TALİMAT]: {custom_prompt}"
 
+    # google_search tool — Gemini kendi kendine Google'da arar, key'siz, her zaman güncel
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": sys_prompt}]},
+        "tools": [{"google_search": {}}],
         "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000},
     }
 
@@ -1379,16 +1375,31 @@ async def gemma_cevap_async(message, conversation, sess,
             async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
                 if resp.status == 200:
                     d = await resp.json()
-                    return d["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    # Gemini bazen birden fazla part döndürür (search result + text), hepsini birleştir
+                    parts = d["candidates"][0]["content"].get("parts", [])
+                    text_parts = [p["text"] for p in parts if "text" in p]
+                    return " ".join(text_parts).strip()
                 elif resp.status == 429:
                     await mark_key_rate_limited(key)
                     continue
+                elif resp.status == 400:
+                    # google_search desteklenmiyorsa (eski model) tool'suz dene
+                    payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
+                    async with sess.post(url, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as resp2:
+                        if resp2.status == 200:
+                            d = await resp2.json()
+                            parts = d["candidates"][0]["content"].get("parts", [])
+                            text_parts = [p["text"] for p in parts if "text" in p]
+                            return " ".join(text_parts).strip()
                 elif resp.status == 404:
                     fb = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
-                    async with sess.post(fb, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as r2:
+                    payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
+                    async with sess.post(fb, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as r2:
                         if r2.status == 200:
                             d = await r2.json()
-                            return d["candidates"][0]["content"]["parts"][0]["text"].strip()
+                            parts = d["candidates"][0]["content"].get("parts", [])
+                            text_parts = [p["text"] for p in parts if "text" in p]
+                            return " ".join(text_parts).strip()
         except Exception as e:
             print(f"⚠️ Attempt {attempt}: {e}")
             continue
@@ -1496,6 +1507,7 @@ async def ws_chat_handler():
             payload = {
                 "contents": [{"role": "user", "parts": [{"text": f"{user_msg}{live_context}"}]}],
                 "system_instruction": {"parts": [{"text": get_system_prompt()}]},
+                "tools": [{"google_search": {}}],
                 "generationConfig": {"temperature": 0.7},
             }
 
