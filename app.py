@@ -144,93 +144,276 @@ async def mark_key_rate_limited(key: str):
             pass
 
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
+GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # ------------------------------------
-# CANLI VERİ: DuckDuckGo (API key'siz)
+# CANLI VERİ: Çoklu Kaynak Stratejisi
 # ------------------------------------
-async def fetch_raw_search(query: str) -> list[dict]:
-    """DuckDuckGo Instant Answer API + HTML scrape — hiç API key gerekmez."""
-    if any(team in query.lower() for team in ["fenerbahçe", "galatasaray", "beşiktaş"]):
-        query = f"{query} son maç sonucu skor"
 
-    results = []
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
-        "Accept-Language": "tr-TR,tr;q=0.9"
+# Farklı User-Agent'lar - bot engelini kırmak için rotasyon
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1",
+]
+
+def get_random_headers() -> dict:
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "DNT": "1",
     }
 
-    # 1. DuckDuckGo Instant Answer API (anlık cevaplar: kur, saat vs.)
+
+async def fetch_duckduckgo_instant(query: str, sess: aiohttp.ClientSession) -> list[dict]:
+    """DuckDuckGo Instant Answer API - hızlı cevaplar."""
+    results = []
     try:
-        async with aiohttp.ClientSession() as s:
-            params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1", "kl": "tr-tr"}
-            async with s.get("https://api.duckduckgo.com/", params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    if data.get("Answer"):
-                        results.append({"title": "Anlık Cevap", "snippet": data["Answer"]})
-                    if data.get("AbstractText"):
-                        results.append({"title": data.get("Heading", ""), "snippet": data["AbstractText"]})
-                    for topic in data.get("RelatedTopics", [])[:3]:
-                        if isinstance(topic, dict) and topic.get("Text"):
-                            results.append({"title": "", "snippet": topic["Text"]})
+        params = {
+            "q": query,
+            "format": "json",
+            "no_html": "1",
+            "skip_disambig": "1",
+            "kl": "tr-tr",
+            "no_redirect": "1",
+        }
+        async with sess.get(
+            "https://api.duckduckgo.com/",
+            params=params,
+            headers=get_random_headers(),
+            timeout=aiohttp.ClientTimeout(total=8),
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json(content_type=None)
+                if data.get("Answer"):
+                    results.append({"title": "Anlık Cevap", "snippet": data["Answer"], "source": "ddg_instant"})
+                if data.get("AbstractText"):
+                    results.append({"title": data.get("Heading", ""), "snippet": data["AbstractText"], "source": "ddg_abstract"})
+                for topic in data.get("RelatedTopics", [])[:4]:
+                    if isinstance(topic, dict) and topic.get("Text"):
+                        results.append({"title": "", "snippet": topic["Text"], "source": "ddg_topic"})
     except Exception as e:
-        print(f"⚠️ DDG Instant API hatası: {e}")
+        print(f"⚠️ DDG Instant hatası: {e}")
+    return results
 
-    # 2. DuckDuckGo HTML scrape (güncel haber/kur/skor)
-    if len(results) < 3:
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    "https://html.duckduckgo.com/html/",
-                    data={"q": query, "kl": "tr-tr"},
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    if resp.status == 200:
-                        html = await resp.text()
-                        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
-                        titles   = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
-                        for t, sn in zip(titles[:5], snippets[:5]):
-                            clean_t = re.sub(r'<[^>]+>', "", t).strip()
-                            clean_s = re.sub(r'<[^>]+>', "", sn).strip()
-                            if clean_s:
-                                results.append({"title": clean_t, "snippet": clean_s})
-        except Exception as e:
-            print(f"⚠️ DDG HTML scrape hatası: {e}")
 
-    print(f"🔍 DuckDuckGo: '{query}' → {len(results)} sonuç")
-    return results[:6]
+async def fetch_duckduckgo_html(query: str, sess: aiohttp.ClientSession) -> list[dict]:
+    """DuckDuckGo HTML scrape - güncel haber, kur, skor."""
+    results = []
+    try:
+        async with sess.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query, "kl": "tr-tr", "df": "d"},  # df=d = son 1 gün
+            headers=get_random_headers(),
+            timeout=aiohttp.ClientTimeout(total=12),
+        ) as resp:
+            if resp.status == 200:
+                html = await resp.text()
+                # Snippet ve başlık çıkar
+                snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+                titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
+                urls = re.findall(r'class="result__url"[^>]*>(.*?)</span>', html, re.DOTALL)
+                for i, (t, sn) in enumerate(zip(titles[:6], snippets[:6])):
+                    clean_t = re.sub(r'<[^>]+>', "", t).strip()
+                    clean_s = re.sub(r'<[^>]+>', "", sn).strip()
+                    url = urls[i].strip() if i < len(urls) else ""
+                    if clean_s:
+                        results.append({"title": clean_t, "snippet": clean_s, "url": url, "source": "ddg_html"})
+            elif resp.status == 403:
+                print("⚠️ DDG HTML: 403 bot engeli")
+    except Exception as e:
+        print(f"⚠️ DDG HTML hatası: {e}")
+    return results
+
+
+async def fetch_bing_search(query: str, sess: aiohttp.ClientSession) -> list[dict]:
+    """Bing arama - DDG başarısız olursa yedek."""
+    results = []
+    try:
+        params = {"q": query, "setlang": "tr", "cc": "TR", "mkt": "tr-TR"}
+        async with sess.get(
+            "https://www.bing.com/search",
+            params=params,
+            headers=get_random_headers(),
+            timeout=aiohttp.ClientTimeout(total=12),
+        ) as resp:
+            if resp.status == 200:
+                html = await resp.text()
+                # Bing sonuç snippetları
+                items = re.findall(
+                    r'<li class="b_algo".*?<h2>(.*?)</h2>.*?<p[^>]*>(.*?)</p>',
+                    html, re.DOTALL
+                )
+                for title_raw, snippet_raw in items[:5]:
+                    clean_t = re.sub(r'<[^>]+>', "", title_raw).strip()
+                    clean_s = re.sub(r'<[^>]+>', "", snippet_raw).strip()
+                    if clean_s and len(clean_s) > 20:
+                        results.append({"title": clean_t, "snippet": clean_s, "source": "bing"})
+    except Exception as e:
+        print(f"⚠️ Bing hatası: {e}")
+    return results
+
+
+async def fetch_google_news_rss(query: str, sess: aiohttp.ClientSession) -> list[dict]:
+    """Google News RSS - haber sorguları için."""
+    results = []
+    try:
+        encoded_query = query.replace(" ", "+")
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=tr&gl=TR&ceid=TR:tr"
+        async with sess.get(
+            url,
+            headers=get_random_headers(),
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status == 200:
+                xml = await resp.text()
+                items = re.findall(r'<item>(.*?)</item>', xml, re.DOTALL)
+                for item in items[:5]:
+                    title_m = re.search(r'<title><!\[CDATA\[(.*?)\]\]></title>', item)
+                    desc_m = re.search(r'<description><!\[CDATA\[(.*?)\]\]></description>', item)
+                    title = title_m.group(1).strip() if title_m else ""
+                    desc = re.sub(r'<[^>]+>', "", desc_m.group(1)).strip() if desc_m else ""
+                    if title:
+                        results.append({"title": title, "snippet": desc or title, "source": "google_news"})
+    except Exception as e:
+        print(f"⚠️ Google News RSS hatası: {e}")
+    return results
+
+
+async def fetch_exchangerate(query: str, sess: aiohttp.ClientSession) -> list[dict]:
+    """Döviz kuru için ExchangeRate-API (ücretsiz endpoint)."""
+    results = []
+    msg = query.lower()
+
+    currency_map = {
+        "dolar": "USD", "usd": "USD",
+        "euro": "EUR", "eur": "EUR",
+        "sterlin": "GBP", "gbp": "GBP",
+        "yen": "JPY", "jpy": "JPY",
+        "frank": "CHF", "chf": "CHF",
+        "ruble": "RUB", "rub": "RUB",
+    }
+
+    target = None
+    for keyword, code in currency_map.items():
+        if keyword in msg:
+            target = code
+            break
+
+    if not target:
+        return results
+
+    try:
+        # Ücretsiz tier - no key gerekmiyor
+        url = f"https://open.er-api.com/v6/latest/{target}"
+        async with sess.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("result") == "success":
+                    rates = data.get("rates", {})
+                    try_rate = rates.get("TRY")
+                    if try_rate:
+                        results.append({
+                            "title": f"{target}/TRY Kuru",
+                            "snippet": f"1 {target} = {try_rate:.4f} Türk Lirası. (Güncelleme: {data.get('time_last_update_utc', 'bilinmiyor')})",
+                            "source": "exchangerate_api"
+                        })
+    except Exception as e:
+        print(f"⚠️ ExchangeRate API hatası: {e}")
+    return results
+
+
+async def fetch_raw_search(query: str, sess: aiohttp.ClientSession) -> list[dict]:
+    """
+    Ana arama fonksiyonu — çoklu kaynak, paralel çalışır.
+    En az 2 sonuç gelene kadar yedek kaynakları dener.
+    """
+    msg = query.lower()
+
+    # Kur sorguları için önce ExchangeRate API dene
+    is_currency = any(w in msg for w in ["dolar", "euro", "sterlin", "yen", "frank", "usd", "eur", "gbp", "kur", "kaç lira"])
+    is_news = any(w in msg for w in ["haber", "son dakika", "bugün ne", "gelişme"])
+
+    tasks = []
+
+    # Her zaman DDG instant + HTML çalıştır
+    tasks.append(fetch_duckduckgo_instant(query, sess))
+    tasks.append(fetch_duckduckgo_html(query, sess))
+
+    # Döviz sorularında ExchangeRate ekle
+    if is_currency:
+        tasks.append(fetch_exchangerate(query, sess))
+
+    # Haber sorularında Google News RSS ekle
+    if is_news:
+        tasks.append(fetch_google_news_rss(query, sess))
+
+    # Paralel çalıştır
+    all_results_nested = await asyncio.gather(*tasks, return_exceptions=True)
+
+    results = []
+    for r in all_results_nested:
+        if isinstance(r, list):
+            results.extend(r)
+
+    # Yeterli sonuç yoksa Bing'e de sor
+    if len(results) < 2:
+        print(f"⚠️ Az sonuç ({len(results)}), Bing'e geçiliyor...")
+        bing_results = await fetch_bing_search(query, sess)
+        results.extend(bing_results)
+
+    # Tekrarları temizle (snippet'e göre)
+    seen = set()
+    unique_results = []
+    for r in results:
+        key = r.get("snippet", "")[:60]
+        if key and key not in seen:
+            seen.add(key)
+            unique_results.append(r)
+
+    print(f"🔍 Toplam arama sonucu: '{query}' → {len(unique_results)} benzersiz sonuç")
+    return unique_results[:8]
 
 
 async def summarize_search_with_ai(question: str, raw_items: list[dict], sess: aiohttp.ClientSession) -> str:
     """
-    Ham arama sonuçlarını Gemini'ye gönder,
-    sadece soruya doğrudan cevap verecek maksimum 10 kelimelik özet al.
+    Ham arama sonuçlarını Gemini'ye gönder.
+    Sonuç boş gelirse veya hata olursa ham snippeti doğrudan döndür.
     """
     if not raw_items:
         return ""
 
-    snippets = "\n".join(
-        f"- {item.get('title','')}: {item.get('snippet','')}"
-        for item in raw_items[:5]
+    snippets_text = "\n".join(
+        f"[{item.get('source', '?')}] {item.get('title', '')}: {item.get('snippet', '')}"
+        for item in raw_items[:6]
     )
 
     summarize_prompt = (
         f"Soru: {question}\n\n"
-        f"Arama sonuçları:\n{snippets}\n\n"
-        "Bu arama sonuçlarından soruya doğrudan cevap ver. "
-        "MUTLAKA bir cevap üret — 'bulunamadı' veya 'bilmiyorum' YAZMA. "
-        "Sayısal değer varsa (kur, skor, saat) onu yaz. "
-        "Cevabın MAKSIMUM 10 KELİME olsun. Kaynak, URL, açıklama yazma."
+        f"Arama sonuçları:\n{snippets_text}\n\n"
+        "Bu arama sonuçlarından soruya DOĞRUDAN ve NET cevap ver.\n"
+        "KURALLAR:\n"
+        "- 'bulunamadı', 'bilmiyorum', 'ulaşamadım' YAZMA\n"
+        "- Sayısal değer varsa (kur, skor, saat, fiyat) MUTLAKA yaz\n"
+        "- Cevap MAKSIMUM 2 cümle olsun\n"
+        "- Kaynak, URL, açıklama YAZMA\n"
+        "- Türkçe yaz"
     )
 
     key = await get_next_gemini_key()
     if not key:
-        return ""
+        # Key yoksa ham snippet döndür
+        return raw_items[0].get("snippet", "")[:300] if raw_items else ""
 
     payload = {
         "contents": [{"role": "user", "parts": [{"text": summarize_prompt}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 50}
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 150}
     }
 
     try:
@@ -238,67 +421,162 @@ async def summarize_search_with_ai(question: str, raw_items: list[dict], sess: a
         async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                summary = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if summary:
+                    return summary
             elif resp.status == 429:
                 await mark_key_rate_limited(key)
+                print("⚠️ Özet için key rate limited, ham veri kullanılıyor")
     except Exception as e:
         print(f"⚠️ AI özet hatası: {e}")
 
-    return ""
+    # AI özeti başarısız olursa ham snippet döndür - BOŞ BIRAKMIYORUZ
+    fallback = " | ".join(
+        item.get("snippet", "")
+        for item in raw_items[:3]
+        if item.get("snippet")
+    )
+    return fallback[:500] if fallback else ""
+
 
 async def fetch_live_data(query: str, sess: aiohttp.ClientSession) -> str:
-    """Arama yap → AI ile özetle → max 10 kelime döndür."""
-    raw_items = await fetch_raw_search(query)
-    print(f"🔍 Arama: '{query}' → {len(raw_items)} sonuç bulundu")
+    """Ana canlı veri fonksiyonu — arama + AI özet."""
+    raw_items = await fetch_raw_search(query, sess)
     if not raw_items:
+        print(f"❌ '{query}' için hiç sonuç gelmedi")
         return ""
+
     summary = await summarize_search_with_ai(query, raw_items, sess)
-    print(f"📝 AI Özet: '{summary}'")
+    print(f"📝 Canlı Veri Özeti: '{summary[:100]}...'")
     return summary
+
 
 # ------------------------------------
 # ARAMA GEREKLİ Mİ?
 # ------------------------------------
-async def should_search_internet(message: str, sess: aiohttp.ClientSession) -> bool:
+async def should_search_internet(message: str, sess: aiohttp.ClientSession) -> tuple[bool, str]:
+    """
+    İnternet araması gerekip gerekmediğini belirler.
+    Tuple döndürür: (arama_gerekli: bool, optimize_query: str)
+    """
     msg = message.lower().strip()
 
-    must_search_patterns = [
-        r"puan\s*(durumu|tablosu|sıralaması)",
-        r"(süper\s*lig|tff|1\.?\s*lig|2\.?\s*lig).*(puan|sıra|lider|kaçıncı)",
-        r"(hangi\s*takım|kaçıncı\s*sıra).*(lig|puan)",
-        r"(maç|skor|gol).*(sonuç|kaç|bitti|kim\s*kazandı)",
-        r"(fenerbahçe|galatasaray|beşiktaş|trabzonspor|başakşehir).*(maç|skor|puan|gol|attı|yendi|kazandı|kaybetti|oynadı)",
-        r"(kim\s*kazandı|kim\s*yendi|bitti\s*mi|skor\s*kaç)",
-        r"hava\s*(nasıl|durumu|kaç\s*derece|sıcaklık)",
-        r"(dolar|euro|altın|sterlin|kripto|bitcoin|bist|borsa).*(kaç|fiyat|kur|bugün|şu\s*an)",
-        r"(kaç\s*lira|fiyatı\s*kaç).*(dolar|euro|altın)",
-        r"son\s*dakika",
-        r"bugün.*(haber|ne\s*oldu|gelişme)",
-        r"saat\s*kaç",
-        r"(şu\s*an|şimdi|bugün).*(saat|tarih)\s*kaç",
-        r"(iftar|sahur).*(saat|kaçta|ne\s*zaman)",
-    ]
-    for pattern in must_search_patterns:
-        if re.search(pattern, msg):
-            return True
+    # ============================================================
+    # KESIN ARAMA GEREKTİREN KALIPLAR
+    # ============================================================
 
+    # Futbol / Spor
+    spor_teams = r"(fenerbahçe|galatasaray|beşiktaş|trabzonspor|başakşehir|sivasspor|konyaspor|antalyaspor|alanyaspor|kasımpaşa|kayserispor|ankaragücü|rizespor|hatayspor|gaziantep|samsunspor|pendikspor|eyüpspor|bodrumspor|goztepe|altay)"
+    if re.search(spor_teams, msg):
+        if re.search(r"(maç|skor|gol|puan|sıra|kaçıncı|yendi|kazandı|kaybetti|oynadı|bitti|sonuç|atıldı|kırmızı|sarı|transfer|forma)", msg):
+            team = re.search(spor_teams, msg)
+            return True, f"{team.group(0)} son maç sonucu bugün"
+
+    if re.search(r"(puan\s*durumu|puan\s*tablosu|lig\s*sıralaması|süper\s*lig\s*puan|tff\s*puan)", msg):
+        return True, "süper lig puan durumu güncel"
+
+    if re.search(r"(kim\s*kazandı|maç\s*sonuç|bitti\s*mi|skor\s*kaç|hangi\s*takım\s*kazandı)", msg):
+        return True, f"{message} son dakika"
+
+    # Döviz / Finans
+    if re.search(r"(dolar|euro|sterlin|altın|gram\s*altın|bitcoin|btc|eth|ethereum|bist|borsa|hisse|kripto)", msg):
+        if re.search(r"(kaç|fiyat|kur|bugün|şu\s*an|şimdi|anlık|ne\s*kadar)", msg):
+            return True, f"{message} anlık fiyat bugün"
+
+    # Hava durumu
+    if re.search(r"(hava\s*durumu|hava\s*nasıl|kaç\s*derece|sıcaklık|yağmur\s*var\s*mı|kar\s*var\s*mı)", msg):
+        sehir_match = re.search(r"(istanbul|ankara|izmir|bursa|antalya|adana|konya|gaziantep|mersin|kayseri|eskişehir|trabzon|samsun|denizli|[a-zçğıöşü]+'(?:da|de|ta|te|nda|nde)')", msg)
+        sehir = sehir_match.group(0) if sehir_match else "türkiye"
+        return True, f"{sehir} hava durumu bugün"
+
+    # İftar/Sahur
+    if re.search(r"(iftar|sahur).*(saat|kaçta|ne\s*zaman|vakti)", msg):
+        sehir_match = re.search(r"(istanbul|ankara|izmir|bursa|antalya|[a-zçğıöşü]+)", msg)
+        sehir = sehir_match.group(0) if sehir_match else "istanbul"
+        return True, f"{sehir} iftar saati bugün"
+
+    # Haberler
+    if re.search(r"(son\s*dakika|breaking|haber|ne\s*oldu|gelişme|açıkladı|duyurdu)", msg):
+        if re.search(r"(bugün|şu\s*an|şimdi|son|yeni|güncel)", msg):
+            return True, f"{message}"
+
+    # Saat / Tarih
+    if re.search(r"saat\s*kaç", msg):
+        return True, "türkiye saat kaç şu an"
+
+    # Genel güncel bilgi
+    if re.search(r"(şu\s*an|şimdi|bugün|güncel|en\s*son|son\s*olarak).*(ne|kim|kaç|nasıl|nerede|hangi)", msg):
+        return True, message
+
+    # Seçim / Siyaset güncel
+    if re.search(r"(seçim|cumhurbaşkanı|başbakan|bakan|hükümet).*(şu\s*an|bugün|kim|güncel|son)", msg):
+        return True, f"{message}"
+
+    # ============================================================
+    # ARAMA GEREKTİRMEYEN KALIPLAR
+    # ============================================================
     no_search_patterns = [
-        "sence", "bence", "fikrin", "düşünüyorsun",
-        "nasıl yapılır", "ne demek", "anlamı", "tarihçe",
-        "anlat", "açıkla", "nedir", "öneri", "tavsiye",
-        "neden", "niye", "kim daha iyi",
+        r"(nasıl\s+yapılır|nasıl\s+yapabilirim|nasıl\s+çalışır)",
+        r"(ne\s+demek|anlamı\s+nedir|tanımı\s+nedir)",
+        r"(tarihçe|tarihi|hakkında\s+bilgi|anlat)",
+        r"(neden|niçin|niye|sebep)",
+        r"(sence|bence|fikrin|düşünüyorsun|ne\s+tavsiye)",
+        r"(kod\s+yaz|program\s+yaz|python|javascript|örnek\s+ver)",
+        r"(şiir|hikaye|masal|roman|yazı\s+yaz)",
+        r"(matematik|hesapla|kaçtır|toplam|çarp|böl)",
     ]
-    if any(p in msg for p in no_search_patterns):
+    for pattern in no_search_patterns:
+        if re.search(pattern, msg):
+            return False, ""
+
+    # ============================================================
+    # BELİRSİZ → AI ile karar ver (hızlı)
+    # ============================================================
+    # Kısa ve net sorgular için AI karar versin
+    if len(msg.split()) <= 8:
+        decision = await ai_search_decision(message, sess)
+        return decision, message if decision else ""
+
+    return False, ""
+
+
+async def ai_search_decision(message: str, sess: aiohttp.ClientSession) -> bool:
+    """Gemini'ye 'bu soru için internet araması gerekir mi?' diye sorar."""
+    key = await get_next_gemini_key()
+    if not key:
         return False
 
+    prompt = (
+        f"Kullanıcı sorusu: '{message}'\n\n"
+        "Bu soru için GÜNCEL internet araması gerekli mi?\n"
+        "Sadece 'EVET' veya 'HAYIR' yaz.\n"
+        "EVET: Anlık kur, skor, hava, haber, fiyat, saat gibi değişken bilgiler.\n"
+        "HAYIR: Genel bilgi, tarih, nasıl yapılır, kod, fikir, sabit bilgiler."
+    )
+
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 5}
+    }
+
+    try:
+        url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
+        async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                answer = data["candidates"][0]["content"]["parts"][0]["text"].strip().upper()
+                return "EVET" in answer
+    except Exception:
+        pass
     return False
+
 
 # ------------------------------------
 # YAŞAM DÖNGÜSÜ
 # ------------------------------------
 @app.before_serving
 async def startup():
-    print("🦆 DuckDuckGo arama motoru aktif (API key gerekmez)")
+    print("🦆 Çoklu arama motoru aktif (DDG + Bing + ExchangeRate + Google News)")
     global session
     timeout = aiohttp.ClientTimeout(total=45, connect=10)
     connector = aiohttp.TCPConnector(ssl=False, limit=100)
@@ -390,11 +668,13 @@ EĞER <WEB_DATA> YOKSA VEYA BOŞ GELİRSE:
 - Kendi güncel bilgilerinle cevap ver, "bulunamadı" veya "ulaşamadım" DEME.
 - Döviz, borsa gibi konularda yaklaşık/genel bilgi ver ve "anlık değişebilir" de.
 - Asla "verilerimde yok" veya "bilgiye ulaşamadım" yazma.
+- Asla "şuraya bak", "siteyi kontrol et", "internette ara" YAZMA. Kendi cevabını ver.
 
 ÖNEMLİ TALİMATLAR:
 1- <WEB_DATA> içindeki bilgiler günceldir. Eğer orada bir skor veya saat varsa, kendi eski bilgilerini UNUT ve sadece oradaki veriyi söyle.
 2- Eğer kullanıcı bir şehrin iftar/sahur vaktini soruyorsa ve <WEB_DATA> içinde saat yazıyorsa, aradaki farkı hesaplayıp söyle.
 3- Maç skorlarında "kim kazandı" sorusuna net yanıt ver.
+4- Döviz kurlarında <WEB_DATA> varsa kesin rakamı söyle, yoksa "yaklaşık X civarında, anlık değişkenlik gösterir" de.
 
 Metehan tarafından geliştirilen bir yapay zeka asistansın.
 Bir dil modeli değilsin.
@@ -427,18 +707,23 @@ AMAÇ: Kısa konuşan, enerjik, zeki, güven veren, modern bir asistan olmak.
 # ------------------------------------
 # ANA CEVAP MOTORU
 # ------------------------------------
-GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-
 async def gemma_cevap_async(message, conversation, sess, user_name=None, image_data=None, custom_prompt=""):
     if not GEMINI_API_KEYS:
         return "⚠️ API anahtarı eksik."
 
-    # Web araması gerekiyorsa AI ile özetle (max 10 kelime)
+    # Web araması gerekiyorsa veri çek
     live_context = ""
-    if await should_search_internet(message, sess):
-        summary = await fetch_live_data(message, sess)
+    search_needed, optimized_query = await should_search_internet(message, sess)
+
+    if search_needed:
+        query_to_use = optimized_query if optimized_query else message
+        print(f"🌐 Canlı arama: '{query_to_use}'")
+        summary = await fetch_live_data(query_to_use, sess)
         if summary:
             live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
+            print(f"✅ WEB_DATA eklendi ({len(summary)} karakter)")
+        else:
+            print(f"❌ WEB_DATA boş — Nova kendi bilgisiyle cevap verecek")
 
     recent_history = conversation[-8:]
     contents = []
@@ -588,6 +873,15 @@ async def ws_chat_handler():
             user_chats = GLOBAL_CACHE["history"].setdefault(user_id, {})
             chat_history = user_chats.setdefault(chat_id, [])
 
+            # WebSocket için de canlı veri kontrol et
+            live_context = ""
+            search_needed, optimized_query = await should_search_internet(user_message, session)
+            if search_needed:
+                query_to_use = optimized_query if optimized_query else user_message
+                summary = await fetch_live_data(query_to_use, session)
+                if summary:
+                    live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
+
             key = await get_next_gemini_key()
             if not key:
                 await websocket.send("⚠️ API anahtarı bulunamadı.")
@@ -597,7 +891,7 @@ async def ws_chat_handler():
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
 
             payload = {
-                "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+                "contents": [{"role": "user", "parts": [{"text": f"{user_message}{live_context}"}]}],
                 "system_instruction": {"parts": [{"text": get_system_prompt()}]},
                 "generationConfig": {"temperature": 0.7}
             }
