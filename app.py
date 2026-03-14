@@ -1327,6 +1327,8 @@ web verileri yada başka bilgide en önemli bilgili yeri **çift tırnak** için
 • Direkt konuya gir
 • Kod sorusunda: açıklama + TAM kod (kısaltma yok)
 • anlamlı emojili konuş 😎😮‍💨🥵▶️...
+
+kullanıcıya kullanıcıdan daha çok önem ver
 """
 
 # ============================================================
@@ -1367,7 +1369,6 @@ async def gemma_cevap_async(message, conversation, sess,
     if custom_prompt:
         sys_prompt += f"\n\n[EK TALİMAT]: {custom_prompt}"
 
-    # google_search tool — Gemini kendi kendine Google'da arar, key'siz, her zaman güncel
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": sys_prompt}]},
@@ -1376,25 +1377,59 @@ async def gemma_cevap_async(message, conversation, sess,
     }
 
     tried = set()
-    for attempt in range(len(GEMINI_API_KEYS)):
+    max_attempts = len(GEMINI_API_KEYS) * 2  # ← Her key'e 2 şans (cooldown sonrası)
+
+    for attempt in range(max_attempts):
         key = await get_next_gemini_key()
-        if not key or key in tried:
+
+        # ── YENİ: tried set'ini cooldown süresi dolduysa temizle ──
+        if not key:
+            print("⚠️ Kullanılabilir key yok, 3s bekleniyor...")
+            await asyncio.sleep(3)
+            tried.clear()  # cooldown dolmuş olabilir, temizle
             continue
+
+        if key in tried:
+            # Tüm key'ler denendi mi?
+            if len(tried) >= len(GEMINI_API_KEYS):
+                print(f"⚠️ Tüm {len(GEMINI_API_KEYS)} key denendi, 5s bekleniyor...")
+                await asyncio.sleep(5)
+                tried.clear()  # ← Reset et, tekrar dene
+            else:
+                await asyncio.sleep(0.2)  # kısa bekleme, farklı key gelecek
+            continue
+
         tried.add(key)
+        key_idx = GEMINI_API_KEYS.index(key)
+        print(f"🔑 Key #{key_idx} deneniyor (attempt {attempt+1}/{max_attempts})")
+
         try:
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
             async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
                 if resp.status == 200:
                     d = await resp.json()
-                    # Gemini bazen birden fazla part döndürür (search result + text), hepsini birleştir
                     parts = d["candidates"][0]["content"].get("parts", [])
                     text_parts = [p["text"] for p in parts if "text" in p]
-                    return " ".join(text_parts).strip()
+                    result = " ".join(text_parts).strip()
+                    if result:
+                        print(f"✅ Key #{key_idx} başarılı")
+                        return result
+
                 elif resp.status == 429:
+                    print(f"⏳ Key #{key_idx} rate-limited (429)")
                     await mark_key_rate_limited(key)
+                    # Bu key'i tried'dan çıkarma — zaten cooldown'da
                     continue
+
+                elif resp.status == 503:
+                    # Geçici yoğunluk — kısa bekle, aynı key tekrar denenebilir
+                    print(f"⚠️ Key #{key_idx} 503 yoğunluk, 2s bekle...")
+                    tried.discard(key)  # ← tried'dan çıkar, tekrar denenebilsin
+                    await asyncio.sleep(2)
+                    continue
+
                 elif resp.status == 400:
-                    # google_search desteklenmiyorsa (eski model) tool'suz dene
+                    # google_search desteklenmiyorsa tool'suz dene
                     payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
                     async with sess.post(url, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as resp2:
                         if resp2.status == 200:
@@ -1402,6 +1437,7 @@ async def gemma_cevap_async(message, conversation, sess,
                             parts = d["candidates"][0]["content"].get("parts", [])
                             text_parts = [p["text"] for p in parts if "text" in p]
                             return " ".join(text_parts).strip()
+
                 elif resp.status == 404:
                     fb = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
                     payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
@@ -1411,8 +1447,16 @@ async def gemma_cevap_async(message, conversation, sess,
                             parts = d["candidates"][0]["content"].get("parts", [])
                             text_parts = [p["text"] for p in parts if "text" in p]
                             return " ".join(text_parts).strip()
+
+                else:
+                    body = await resp.text()
+                    print(f"⚠️ Key #{key_idx} HTTP {resp.status}: {body[:150]}")
+
+        except asyncio.TimeoutError:
+            print(f"⏱️ Key #{key_idx} timeout")
+            continue
         except Exception as e:
-            print(f"⚠️ Attempt {attempt}: {e}")
+            print(f"⚠️ Key #{key_idx} hata: {e}")
             continue
 
     return "⚠️ Şu an yoğunluk var, tekrar dener misin?"
