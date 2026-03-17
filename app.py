@@ -4,16 +4,11 @@ import asyncio
 import aiohttp
 import random
 import traceback
-import ssl
-import uuid
-import base64
-import sys
 import hashlib
 import time
-from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from quart import Quart, request, jsonify, send_file, websocket
+from quart import Quart, request, jsonify, websocket
 from werkzeug.datastructures import FileStorage
 
 import aiofiles
@@ -82,16 +77,44 @@ GLOBAL_CACHE = {"history": {}, "last_seen": {}, "api_cache": {}, "tokens": []}
 DIRTY_FLAGS  = {"history": False, "last_seen": False, "api_cache": False, "tokens": False}
 
 # ============================================================
+# RESPONSE CACHE — aynı soruya tekrar API çağırma (5 dk TTL)
+# ============================================================
+_RESP_CACHE: dict[str, tuple[str, float]] = {}
+RESP_CACHE_TTL = 300  # saniye
+
+# Anlık veri gerektiren sorgular cache'lenmez
+_NO_CACHE_RE = re.compile(
+    r"(saat|bugün|şimdi|anlık|dolar|euro|bitcoin|btc|hava|fiyat|kur|"
+    r"skor|maç|borsa|hisse|haber|deprem|puan\s*durumu)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+def _is_cacheable(msg: str) -> bool:
+    return not _NO_CACHE_RE.search(msg)
+
+def resp_cache_get(msg: str) -> str | None:
+    k = hashlib.md5(msg.strip().lower().encode()).hexdigest()
+    if k in _RESP_CACHE:
+        val, ts = _RESP_CACHE[k]
+        if time.time() - ts < RESP_CACHE_TTL:
+            return val
+        del _RESP_CACHE[k]
+    return None
+
+def resp_cache_set(msg: str, response: str):
+    if len(_RESP_CACHE) >= 200:
+        oldest = min(_RESP_CACHE, key=lambda k: _RESP_CACHE[k][1])
+        del _RESP_CACHE[oldest]
+    _RESP_CACHE[hashlib.md5(msg.strip().lower().encode()).hexdigest()] = (response, time.time())
+
+# ============================================================
 # KISA SÜRELİ ARAMA CACHE (3 dakika TTL)
 # ============================================================
 _SEARCH_CACHE: dict[str, tuple[str, float]] = {}
-SEARCH_CACHE_TTL = 180  # saniye
-
-def _cache_key(query: str) -> str:
-    return hashlib.md5(query.lower().strip().encode()).hexdigest()
+SEARCH_CACHE_TTL = 180
 
 def cache_get(query: str) -> str | None:
-    k = _cache_key(query)
+    k = hashlib.md5(query.lower().strip().encode()).hexdigest()
     if k in _SEARCH_CACHE:
         result, ts = _SEARCH_CACHE[k]
         if time.time() - ts < SEARCH_CACHE_TTL:
@@ -102,7 +125,7 @@ def cache_get(query: str) -> str | None:
 
 def cache_set(query: str, result: str):
     if result:
-        _SEARCH_CACHE[_cache_key(query)] = (result, time.time())
+        _SEARCH_CACHE[hashlib.md5(query.lower().strip().encode()).hexdigest()] = (result, time.time())
 
 # ============================================================
 # GEMINI API KEY YÖNETİMİ
@@ -117,7 +140,6 @@ GEMINI_API_KEYS = [k.strip() for k in [
 ] if k.strip()]
 print(f"✅ {len(GEMINI_API_KEYS)} Gemini key yüklendi.")
 
-# ── Opsiyonel API Key'leri ─────────────────────────────────
 COINGECKO_API_KEY    = os.getenv("COINGECKO_API_KEY", "").strip()
 EXCHANGERATE_API_KEY = os.getenv("EXCHANGERATE_API_KEY", "").strip()
 OPENWEATHER_API_KEY  = os.getenv("OPENWEATHER_API_KEY", "").strip()
@@ -125,20 +147,11 @@ NEWS_API_KEY         = os.getenv("NEWS_API_KEY", "").strip()
 ALPHA_VANTAGE_KEY    = os.getenv("ALPHA_VANTAGE_KEY", "").strip()
 APIFOOTBALL_KEY      = os.getenv("APIFOOTBALL_KEY", "").strip()
 
-print(f"🔑 Opsiyonel API'ler: "
-      f"CoinGecko={'✅' if COINGECKO_API_KEY else '⬜ (key\'siz, ücretsiz)'} | "
-      f"ExchangeRate={'✅' if EXCHANGERATE_API_KEY else '⬜ (key\'siz, ücretsiz)'} | "
-      f"OpenWeather={'✅' if OPENWEATHER_API_KEY else '⬜ (Open-Meteo kullanılıyor)'} | "
-      f"NewsAPI={'✅' if NEWS_API_KEY else '⬜ (RSS kullanılıyor)'} | "
-      f"AlphaVantage={'✅' if ALPHA_VANTAGE_KEY else '⬜ (Yahoo Finance kullanılıyor)'} | "
-      f"APIFootball={'✅' if APIFOOTBALL_KEY else '⬜ (scraping kullanılıyor)'}"
-)
-
 CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
-GEMINI_MODEL_NAME = "gemini-2.5-flash"          # Fallback model adı
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 async def get_next_gemini_key() -> str | None:
@@ -173,7 +186,6 @@ UA_POOL = [
     "Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 Version/17.3 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (iPad; CPU OS 17_3 like Mac OS X) AppleWebKit/605.1.15 Version/17.3 Safari/604.1",
 ]
 
 def rand_headers(extra: dict | None = None) -> dict:
@@ -232,12 +244,9 @@ async def safe_post(sess: aiohttp.ClientSession, url: str, *,
         return 0, ""
 
 # ============================================================
-# ═══════════════════════════════════════════════════════════
-#   SCRAPER FONKSİYONLARI  (17 modül)
-# ═══════════════════════════════════════════════════════════
+# SCRAPER FONKSİYONLARI (17 modül)
 # ============================================================
 
-# ── 1. DuckDuckGo Instant Answer API ──────────────────────
 async def scrape_ddg_instant(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     status, text = await safe_get(sess, "https://api.duckduckgo.com/", params={
@@ -258,7 +267,6 @@ async def scrape_ddg_instant(query: str, sess: aiohttp.ClientSession) -> list[di
             pass
     return results
 
-# ── 2. DuckDuckGo HTML Scrape ──────────────────────────────
 async def scrape_ddg_html(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     status, html = await safe_post(sess, "https://html.duckduckgo.com/html/",
@@ -272,7 +280,6 @@ async def scrape_ddg_html(query: str, sess: aiohttp.ClientSession) -> list[dict]
                 results.append({"title": clean_html(t), "snippet": clean_s, "src": "ddg_html"})
     return results
 
-# ── 3. Bing Web Arama ─────────────────────────────────────
 async def scrape_bing(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     status, html = await safe_get(sess, "https://www.bing.com/search",
@@ -288,12 +295,10 @@ async def scrape_bing(query: str, sess: aiohttp.ClientSession) -> list[dict]:
                 if snippet and len(snippet) > 20:
                     results.append({
                         "title": clean_html(h2.group(1)) if h2 else "",
-                        "snippet": snippet,
-                        "src": "bing"
+                        "snippet": snippet, "src": "bing"
                     })
     return results
 
-# ── 4. Google News RSS ────────────────────────────────────
 async def scrape_google_news_rss(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}&hl=tr&gl=TR&ceid=TR:tr"
@@ -306,13 +311,9 @@ async def scrape_google_news_rss(query: str, sess: aiohttp.ClientSession) -> lis
             title   = clean_html(title_m.group(1)) if title_m else ""
             pubdate = pubdate_m.group(1).strip()[:16] if pubdate_m else ""
             if title:
-                results.append({
-                    "snippet": f"[{pubdate}] {title}" if pubdate else title,
-                    "src": "gnews_rss"
-                })
+                results.append({"snippet": f"[{pubdate}] {title}" if pubdate else title, "src": "gnews_rss"})
     return results
 
-# ── 5. ExchangeRate API (döviz kuru) ──────────────────────
 async def scrape_exchange_rate(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     msg = query.lower()
@@ -324,12 +325,12 @@ async def scrape_exchange_rate(query: str, sess: aiohttp.ClientSession) -> list[
     if any(w in msg for w in ["frank", "chf"]):         targets.append("CHF")
     if any(w in msg for w in ["riyal", "sar"]):         targets.append("SAR")
     if any(w in msg for w in ["ruble", "rub"]):         targets.append("RUB")
-
     for currency in targets[:2]:
-        if EXCHANGERATE_API_KEY:
-            er_url = f"https://v6.exchangerate-api.com/v6/{EXCHANGERATE_API_KEY}/latest/{currency}"
-        else:
-            er_url = f"https://open.er-api.com/v6/latest/{currency}"
+        er_url = (
+            f"https://v6.exchangerate-api.com/v6/{EXCHANGERATE_API_KEY}/latest/{currency}"
+            if EXCHANGERATE_API_KEY else
+            f"https://open.er-api.com/v6/latest/{currency}"
+        )
         status, text = await safe_get(sess, er_url, timeout=8)
         if status == 200 and text:
             try:
@@ -347,35 +348,26 @@ async def scrape_exchange_rate(query: str, sess: aiohttp.ClientSession) -> list[
         await asyncio.sleep(0.05)
     return results
 
-# ── 6. CoinGecko Kripto Fiyatları ─────────────────────────
 async def scrape_coingecko(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     msg = query.lower()
     coin_map = {
-        "bitcoin": "bitcoin", "btc": "bitcoin",
-        "ethereum": "ethereum", "eth": "ethereum",
-        "bnb": "binancecoin", "xrp": "ripple",
-        "solana": "solana", "sol": "solana",
-        "dogecoin": "dogecoin", "doge": "dogecoin",
-        "cardano": "cardano", "ada": "cardano",
-        "avalanche": "avalanche-2", "avax": "avalanche-2",
-        "tether": "tether", "usdt": "tether",
-        "shiba": "shiba-inu", "shib": "shiba-inu",
-        "polkadot": "polkadot", "dot": "polkadot",
-        "litecoin": "litecoin", "ltc": "litecoin",
-        "chainlink": "chainlink", "link": "chainlink",
+        "bitcoin": "bitcoin", "btc": "bitcoin", "ethereum": "ethereum", "eth": "ethereum",
+        "bnb": "binancecoin", "xrp": "ripple", "solana": "solana", "sol": "solana",
+        "dogecoin": "dogecoin", "doge": "dogecoin", "cardano": "cardano", "ada": "cardano",
+        "avalanche": "avalanche-2", "avax": "avalanche-2", "tether": "tether", "usdt": "tether",
+        "shiba": "shiba-inu", "shib": "shiba-inu", "polkadot": "polkadot", "dot": "polkadot",
+        "litecoin": "litecoin", "ltc": "litecoin", "chainlink": "chainlink", "link": "chainlink",
     }
     ids = list({coin_id for kw, coin_id in coin_map.items() if kw in msg})
     if not ids:
         return results
-
     cg_headers = rand_headers({"Accept": "application/json"})
     if COINGECKO_API_KEY:
         cg_headers["x-cg-pro-api-key"] = COINGECKO_API_KEY
         cg_url = "https://pro-api.coingecko.com/api/v3/simple/price"
     else:
         cg_url = "https://api.coingecko.com/api/v3/simple/price"
-
     status, text = await safe_get(sess, cg_url,
         params={"ids": ",".join(ids[:4]), "vs_currencies": "usd,try", "include_24hr_change": "true"},
         headers=cg_headers, timeout=10)
@@ -387,36 +379,25 @@ async def scrape_coingecko(query: str, sess: aiohttp.ClientSession) -> list[dict
                 try_p  = prices.get("try", "?")
                 change = prices.get("usd_24h_change", 0)
                 change_str = f"{change:+.2f}%" if isinstance(change, (int, float)) else ""
-                results.append({
-                    "snippet": f"{coin_id.title()}: ${usd} USD / {try_p} TRY {change_str} 24s.",
-                    "src": "coingecko"
-                })
+                results.append({"snippet": f"{coin_id.title()}: ${usd} USD / {try_p} TRY {change_str} 24s.", "src": "coingecko"})
         except Exception:
             pass
     return results
 
-# ── 7. Yahoo Finance (hisse, endeks, emtia) ───────────────
 async def scrape_yahoo_finance(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     msg = query.lower()
     ticker_map = {
-        "altın": "GC=F", "gold": "GC=F",
-        "gümüş": "SI=F", "silver": "SI=F",
-        "petrol": "CL=F", "oil": "CL=F",
-        "nasdaq": "^IXIC",
-        "s&p": "^GSPC", "s&p 500": "^GSPC",
-        "dow": "^DJI",
-        "apple": "AAPL", "google": "GOOGL",
-        "microsoft": "MSFT", "tesla": "TSLA",
-        "amazon": "AMZN", "nvidia": "NVDA",
-        "meta": "META",
+        "altın": "GC=F", "gold": "GC=F", "gümüş": "SI=F", "silver": "SI=F",
+        "petrol": "CL=F", "oil": "CL=F", "nasdaq": "^IXIC",
+        "s&p": "^GSPC", "s&p 500": "^GSPC", "dow": "^DJI",
+        "apple": "AAPL", "google": "GOOGL", "microsoft": "MSFT",
+        "tesla": "TSLA", "amazon": "AMZN", "nvidia": "NVDA", "meta": "META",
     }
     tickers = list({tick for kw, tick in ticker_map.items() if kw in msg})
-
     for ticker in tickers[:2]:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        status, text = await safe_get(sess, url,
-            params={"interval": "1d", "range": "1d"},
+        status, text = await safe_get(sess, url, params={"interval": "1d", "range": "1d"},
             headers=rand_headers({"Accept": "application/json"}), timeout=10)
         if status == 200 and text:
             try:
@@ -427,44 +408,32 @@ async def scrape_yahoo_finance(query: str, sess: aiohttp.ClientSession) -> list[
                 change = ((price - prev) / prev * 100) if isinstance(price, (int, float)) and prev else 0
                 cur    = meta.get("currency", "")
                 name   = meta.get("shortName") or ticker
-                results.append({
-                    "snippet": f"{name}: {price} {cur} ({change:+.2f}% bugün).",
-                    "src": "yahoo_finance"
-                })
+                results.append({"snippet": f"{name}: {price} {cur} ({change:+.2f}% bugün).", "src": "yahoo_finance"})
             except Exception:
                 pass
         await asyncio.sleep(0.05)
     return results
 
-# ── 8. Borsa İstanbul - Türk Hisseleri ────────────────────
 async def scrape_bist(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     msg = query.lower()
     stock_map = {
         "thyao": "THYAO.IS", "thy": "THYAO.IS", "türk hava": "THYAO.IS",
-        "arclk": "ARCLK.IS", "arçelik": "ARCLK.IS",
-        "eregl": "EREGL.IS", "ereğli": "EREGL.IS",
-        "sasa": "SASA.IS", "ekgyo": "EKGYO.IS",
-        "bimas": "BIMAS.IS", "bim": "BIMAS.IS",
-        "migros": "MGROS.IS", "mgros": "MGROS.IS",
-        "krdmd": "KRDMD.IS",
-        "asels": "ASELS.IS", "aselsan": "ASELS.IS",
-        "tuprs": "TUPRS.IS", "tüpraş": "TUPRS.IS",
-        "akbnk": "AKBNK.IS", "akbank": "AKBNK.IS",
-        "garan": "GARAN.IS", "garanti": "GARAN.IS",
-        "ykbnk": "YKBNK.IS", "yapı kredi": "YKBNK.IS",
-        "sahol": "SAHOL.IS", "sabancı": "SAHOL.IS",
+        "arclk": "ARCLK.IS", "arçelik": "ARCLK.IS", "eregl": "EREGL.IS", "ereğli": "EREGL.IS",
+        "sasa": "SASA.IS", "ekgyo": "EKGYO.IS", "bimas": "BIMAS.IS", "bim": "BIMAS.IS",
+        "migros": "MGROS.IS", "mgros": "MGROS.IS", "krdmd": "KRDMD.IS",
+        "asels": "ASELS.IS", "aselsan": "ASELS.IS", "tuprs": "TUPRS.IS", "tüpraş": "TUPRS.IS",
+        "akbnk": "AKBNK.IS", "akbank": "AKBNK.IS", "garan": "GARAN.IS", "garanti": "GARAN.IS",
+        "ykbnk": "YKBNK.IS", "yapı kredi": "YKBNK.IS", "sahol": "SAHOL.IS", "sabancı": "SAHOL.IS",
         "kchol": "KCHOL.IS", "koç holding": "KCHOL.IS",
         "bist": "XU100.IS", "borsa": "XU100.IS", "bist100": "XU100.IS",
     }
     tickers = list({tick for kw, tick in stock_map.items() if kw in msg})
     if not tickers and any(w in msg for w in ["borsa istanbul", "bist 100"]):
         tickers = ["XU100.IS"]
-
     for ticker in tickers[:2]:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        status, text = await safe_get(sess, url,
-            params={"interval": "1d", "range": "1d"},
+        status, text = await safe_get(sess, url, params={"interval": "1d", "range": "1d"},
             headers=rand_headers({"Accept": "application/json"}), timeout=10)
         if status == 200 and text:
             try:
@@ -475,42 +444,27 @@ async def scrape_bist(query: str, sess: aiohttp.ClientSession) -> list[dict]:
                 change = ((price - prev) / prev * 100) if isinstance(price, (int, float)) and prev else 0
                 cur    = meta.get("currency", "TRY")
                 name   = meta.get("shortName") or ticker
-                results.append({
-                    "snippet": f"{name} ({ticker}): {price} {cur} ({change:+.2f}% bugün).",
-                    "src": "yahoo_bist"
-                })
+                results.append({"snippet": f"{name} ({ticker}): {price} {cur} ({change:+.2f}% bugün).", "src": "yahoo_bist"})
             except Exception:
                 pass
         await asyncio.sleep(0.05)
     return results
 
-# ── 9. Hava Durumu - Open-Meteo (key'siz) ────────────────
 async def scrape_weather(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     city_coords = {
-        "istanbul":   (41.0082, 28.9784),
-        "ankara":     (39.9334, 32.8597),
-        "izmir":      (38.4192, 27.1287),
-        "bursa":      (40.1885, 29.0610),
-        "antalya":    (36.8969, 30.7133),
-        "adana":      (37.0000, 35.3213),
-        "konya":      (37.8714, 32.4846),
-        "gaziantep":  (37.0662, 37.3833),
-        "mersin":     (36.8000, 34.6333),
-        "kayseri":    (38.7205, 35.4826),
-        "trabzon":    (41.0015, 39.7178),
-        "samsun":     (41.2867, 36.3300),
-        "eskişehir":  (39.7767, 30.5206),
-        "diyarbakır": (37.9144, 40.2306),
-        "erzurum":    (39.9086, 41.2769),
-        "van":        (38.4891, 43.4089),
-        "bodrum":     (37.0345, 27.4305),
-        "alanya":     (36.5432, 31.9999),
-        "marmaris":   (36.8544, 28.2693),
-        "fethiye":    (36.6558, 29.1024),
-        "muğla":      (37.2153, 28.3636),
-        "kapadokya":  (38.6431, 34.8289),
-        "pamukkale":  (37.9215, 29.1207),
+        "istanbul": (41.0082, 28.9784), "ankara": (39.9334, 32.8597),
+        "izmir": (38.4192, 27.1287), "bursa": (40.1885, 29.0610),
+        "antalya": (36.8969, 30.7133), "adana": (37.0000, 35.3213),
+        "konya": (37.8714, 32.4846), "gaziantep": (37.0662, 37.3833),
+        "mersin": (36.8000, 34.6333), "kayseri": (38.7205, 35.4826),
+        "trabzon": (41.0015, 39.7178), "samsun": (41.2867, 36.3300),
+        "eskişehir": (39.7767, 30.5206), "diyarbakır": (37.9144, 40.2306),
+        "erzurum": (39.9086, 41.2769), "van": (38.4891, 43.4089),
+        "bodrum": (37.0345, 27.4305), "alanya": (36.5432, 31.9999),
+        "marmaris": (36.8544, 28.2693), "fethiye": (36.6558, 29.1024),
+        "muğla": (37.2153, 28.3636), "kapadokya": (38.6431, 34.8289),
+        "pamukkale": (37.9215, 29.1207),
     }
     msg = query.lower()
     lat, lon, city_name = 41.0082, 28.9784, "İstanbul"
@@ -519,18 +473,13 @@ async def scrape_weather(query: str, sess: aiohttp.ClientSession) -> list[dict]:
             lat, lon = coords
             city_name = city.title()
             break
-
-    status, text = await safe_get(sess,
-        "https://api.open-meteo.com/v1/forecast",
+    status, text = await safe_get(sess, "https://api.open-meteo.com/v1/forecast",
         params={
             "latitude": lat, "longitude": lon,
             "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
             "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum",
-            "timezone": "Europe/Istanbul",
-            "forecast_days": 3,
-        },
-        headers=rand_headers({"Accept": "application/json"}), timeout=10)
-
+            "timezone": "Europe/Istanbul", "forecast_days": 3,
+        }, headers=rand_headers({"Accept": "application/json"}), timeout=10)
     if status == 200 and text:
         try:
             d   = json.loads(text)
@@ -545,18 +494,14 @@ async def scrape_weather(query: str, sess: aiohttp.ClientSession) -> list[dict]:
                 "snippet": (
                     f"{city_name}: {temp}°C (hissedilen {feels}°C), {_wmo_code(wcode)}. "
                     f"Nem %{humid}, Rüzgar {wind} km/s, Yağış {precip} mm."
-                ),
-                "src": "open_meteo"
+                ), "src": "open_meteo"
             })
-            daily  = d.get("daily", {})
-            dates  = daily.get("time", [])
-            maxes  = daily.get("temperature_2m_max", [])
-            mins   = daily.get("temperature_2m_min", [])
+            daily = d.get("daily", {})
+            dates = daily.get("time", [])
+            maxes = daily.get("temperature_2m_max", [])
+            mins  = daily.get("temperature_2m_min", [])
             for i in range(min(3, len(dates))):
-                results.append({
-                    "snippet": f"{dates[i]}: max {maxes[i]}°C / min {mins[i]}°C",
-                    "src": "open_meteo_daily"
-                })
+                results.append({"snippet": f"{dates[i]}: max {maxes[i]}°C / min {mins[i]}°C", "src": "open_meteo_daily"})
         except Exception as e:
             print(f"⚠️ Hava durumu parse: {e}")
     return results
@@ -564,22 +509,19 @@ async def scrape_weather(query: str, sess: aiohttp.ClientSession) -> list[dict]:
 def _wmo_code(code: int) -> str:
     m = {
         0: "Açık", 1: "Az bulutlu", 2: "Parçalı bulutlu", 3: "Bulutlu",
-        45: "Sisli", 48: "Dondurucu sis",
-        51: "Hafif çisenti", 53: "Orta çisenti", 55: "Yoğun çisenti",
-        61: "Hafif yağmur", 63: "Orta yağmur", 65: "Kuvvetli yağmur",
+        45: "Sisli", 48: "Dondurucu sis", 51: "Hafif çisenti", 53: "Orta çisenti",
+        55: "Yoğun çisenti", 61: "Hafif yağmur", 63: "Orta yağmur", 65: "Kuvvetli yağmur",
         71: "Hafif kar", 73: "Orta kar", 75: "Yoğun kar",
         80: "Hafif sağanak", 81: "Orta sağanak", 82: "Kuvvetli sağanak",
         95: "Gök gürültülü fırtına", 96: "Dolu'lu fırtına", 99: "Şiddetli fırtına",
     }
     return m.get(code, "Değişken")
 
-# ── 10. Namaz / İftar Vakitleri - Aladhan (key'siz) ──────
 async def scrape_prayer_times(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     msg = query.lower()
     if not any(w in msg for w in ["iftar", "sahur", "namaz", "ezan", "imsak", "akşam vakti"]):
         return results
-
     city_map = {
         "istanbul": "Istanbul", "ankara": "Ankara", "izmir": "Izmir",
         "bursa": "Bursa", "antalya": "Antalya", "konya": "Konya",
@@ -591,12 +533,10 @@ async def scrape_prayer_times(query: str, sess: aiohttp.ClientSession) -> list[d
     city_key = next((k for k in city_map if k in msg), "istanbul")
     city_api = city_map[city_key]
     now = datetime.now(timezone(timedelta(hours=3)))
-
     status, text = await safe_get(sess,
         f"https://api.aladhan.com/v1/timingsByCity/{now.strftime('%d-%m-%Y')}",
         params={"city": city_api, "country": "Turkey", "method": 13},
         headers=rand_headers({"Accept": "application/json"}), timeout=10)
-
     if status == 200 and text:
         try:
             d = json.loads(text)
@@ -607,37 +547,26 @@ async def scrape_prayer_times(query: str, sess: aiohttp.ClientSession) -> list[d
                     f"İmsak/Sahur {t.get('Fajr','?')}, Güneş {t.get('Sunrise','?')}, "
                     f"Öğle {t.get('Dhuhr','?')}, İkindi {t.get('Asr','?')}, "
                     f"İftar/Akşam {t.get('Maghrib','?')}, Yatsı {t.get('Isha','?')}."
-                ),
-                "src": "aladhan_api"
+                ), "src": "aladhan_api"
             })
         except Exception as e:
             print(f"⚠️ Prayer times parse: {e}")
     return results
 
-# ── 11. Güncel Saat ───────────────────────────────────────
 async def get_clock() -> list[dict]:
     tr_tz = timezone(timedelta(hours=3))
     now   = datetime.now(tr_tz)
     gunler = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
     aylar  = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
                "Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
-    return [{
-        "snippet": (
-            f"Türkiye saati: {now.strftime('%H:%M:%S')} "
-            f"({now.day} {aylar[now.month-1]} {now.year} {gunler[now.weekday()]})."
-        ),
-        "src": "system_clock"
-    }]
+    return [{"snippet": f"Türkiye saati: {now.strftime('%H:%M:%S')} ({now.day} {aylar[now.month-1]} {now.year} {gunler[now.weekday()]}).", "src": "system_clock"}]
 
-# ── 12. Deprem Verileri - Kandilli ────────────────────────
 async def scrape_earthquake(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     msg = query.lower()
     if not any(w in msg for w in ["deprem", "sarsıntı", "kandilli", "richter", "büyüklük", "kaç şiddet"]):
         return results
-    status, html = await safe_get(sess,
-        "http://www.koeri.boun.edu.tr/scripts/lst0.asp",
-        headers=rand_headers(), timeout=12)
+    status, html = await safe_get(sess, "http://www.koeri.boun.edu.tr/scripts/lst0.asp", headers=rand_headers(), timeout=12)
     if status == 200 and html:
         rows = re.findall(r'<pre[^>]*>(.*?)</pre>', html, re.DOTALL)
         if rows:
@@ -645,13 +574,9 @@ async def scrape_earthquake(query: str, sess: aiohttp.ClientSession) -> list[dic
             for line in lines[1:6]:
                 parts = line.split()
                 if len(parts) >= 7:
-                    results.append({
-                        "snippet": f"Deprem: {parts[0]} {parts[1]} | Büyüklük {parts[6]} | {' '.join(parts[8:]) if len(parts) > 8 else ''}",
-                        "src": "kandilli"
-                    })
+                    results.append({"snippet": f"Deprem: {parts[0]} {parts[1]} | Büyüklük {parts[6]} | {' '.join(parts[8:]) if len(parts) > 8 else ''}", "src": "kandilli"})
     return results[:4]
 
-# ── 13. Wikipedia Türkçe ──────────────────────────────────
 async def scrape_wikipedia(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     status, text = await safe_get(sess, "https://tr.wikipedia.org/w/api.php", params={
@@ -669,15 +594,12 @@ async def scrape_wikipedia(query: str, sess: aiohttp.ClientSession) -> list[dict
             pass
     return results
 
-# ── 13b. NewsAPI (key varsa) ──────────────────────────────
 async def scrape_newsapi(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     if not NEWS_API_KEY:
         return []
     results = []
-    status, text = await safe_get(sess,
-        "https://newsapi.org/v2/everything",
-        params={"q": query, "language": "tr", "sortBy": "publishedAt",
-                "pageSize": 6, "apiKey": NEWS_API_KEY},
+    status, text = await safe_get(sess, "https://newsapi.org/v2/everything",
+        params={"q": query, "language": "tr", "sortBy": "publishedAt", "pageSize": 6, "apiKey": NEWS_API_KEY},
         headers=rand_headers({"Accept": "application/json"}), timeout=10)
     if status == 200 and text:
         try:
@@ -688,30 +610,22 @@ async def scrape_newsapi(query: str, sess: aiohttp.ClientSession) -> list[dict]:
                 published = art.get("publishedAt", "")[:10]
                 source    = art.get("source", {}).get("name", "")
                 if title:
-                    results.append({
-                        "snippet": f"[{published}] [{source}] {title}. {desc}"[:250],
-                        "src": "newsapi"
-                    })
+                    results.append({"snippet": f"[{published}] [{source}] {title}. {desc}"[:250], "src": "newsapi"})
         except Exception as e:
             print(f"NewsAPI parse: {e}")
     return results
 
-# ── 13c. Alpha Vantage (döviz yedek, key varsa) ───────────
 async def scrape_alpha_vantage(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     if not ALPHA_VANTAGE_KEY:
         return []
     results = []
     msg = query.lower()
-    sym_map = {"dolar": "USD", "usd": "USD", "euro": "EUR", "eur": "EUR",
-               "sterlin": "GBP", "gbp": "GBP"}
+    sym_map = {"dolar": "USD", "usd": "USD", "euro": "EUR", "eur": "EUR", "sterlin": "GBP", "gbp": "GBP"}
     from_sym = next((v for k, v in sym_map.items() if k in msg), None)
     if not from_sym:
         return results
-    status, text = await safe_get(sess,
-        "https://www.alphavantage.co/query",
-        params={"function": "CURRENCY_EXCHANGE_RATE",
-                "from_currency": from_sym, "to_currency": "TRY",
-                "apikey": ALPHA_VANTAGE_KEY},
+    status, text = await safe_get(sess, "https://www.alphavantage.co/query",
+        params={"function": "CURRENCY_EXCHANGE_RATE", "from_currency": from_sym, "to_currency": "TRY", "apikey": ALPHA_VANTAGE_KEY},
         headers=rand_headers({"Accept": "application/json"}), timeout=10)
     if status == 200 and text:
         try:
@@ -720,36 +634,27 @@ async def scrape_alpha_vantage(query: str, sess: aiohttp.ClientSession) -> list[
             rate = info.get("5. Exchange Rate")
             upd  = info.get("6. Last Refreshed", "")
             if rate:
-                results.append({
-                    "snippet": f"1 {from_sym} = {float(rate):.4f} TRY (AlphaVantage, {upd}).",
-                    "src": "alpha_vantage"
-                })
+                results.append({"snippet": f"1 {from_sym} = {float(rate):.4f} TRY (AlphaVantage, {upd}).", "src": "alpha_vantage"})
         except Exception:
             pass
     return results
 
-# ── 13d. API-Football (maç verileri, key varsa) ──────────
 async def scrape_apifootball(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     if not APIFOOTBALL_KEY:
         return []
     results = []
     msg = query.lower()
     team_ids = {
-        "fenerbahce": 636, "fenerbahçe": 636,
-        "galatasaray": 506, "besiktas": 635, "beşiktaş": 635,
-        "trabzonspor": 641, "basaksehir": 7457, "başakşehir": 7457,
+        "fenerbahce": 636, "fenerbahçe": 636, "galatasaray": 506,
+        "besiktas": 635, "beşiktaş": 635, "trabzonspor": 641,
+        "basaksehir": 7457, "başakşehir": 7457,
     }
     team_id = next((tid for team, tid in team_ids.items() if team in msg), None)
     if not team_id:
         return results
-    status, text = await safe_get(sess,
-        "https://v3.football.api-sports.io/fixtures",
+    status, text = await safe_get(sess, "https://v3.football.api-sports.io/fixtures",
         params={"team": team_id, "last": 3, "timezone": "Europe/Istanbul"},
-        headers=rand_headers({
-            "Accept": "application/json",
-            "x-rapidapi-key": APIFOOTBALL_KEY,
-            "x-rapidapi-host": "v3.football.api-sports.io",
-        }), timeout=12)
+        headers=rand_headers({"Accept": "application/json", "x-rapidapi-key": APIFOOTBALL_KEY, "x-rapidapi-host": "v3.football.api-sports.io"}), timeout=12)
     if status == 200 and text:
         try:
             d = json.loads(text)
@@ -763,15 +668,11 @@ async def scrape_apifootball(query: str, sess: aiohttp.ClientSession) -> list[di
                 score  = f"{gh}-{ga}" if gh is not None else "Oynanmadı"
                 date_s = f.get("date", "")[:10]
                 stat   = f.get("status", {}).get("long", "")
-                results.append({
-                    "snippet": f"{date_s} | {home} {score} {away} ({stat})",
-                    "src": "apifootball"
-                })
+                results.append({"snippet": f"{date_s} | {home} {score} {away} ({stat})", "src": "apifootball"})
         except Exception as e:
             print(f"API-Football parse: {e}")
     return results
 
-# ── 14. Türk Haber RSS (9 kaynak, paralel) ────────────────
 async def scrape_rss_news(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     rss_sources = [
         "https://www.ntv.com.tr/son-dakika.rss",
@@ -817,21 +718,14 @@ async def scrape_rss_news(query: str, sess: aiohttp.ClientSession) -> list[dict]
             results.extend(r)
     return results[:10]
 
-# ── 15. Türk Haber Siteleri (HTML arama, paralel) ─────────
 async def scrape_turkish_news_sites(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     sources = [
-        {"name": "ntv",       "url": f"https://www.ntv.com.tr/arama?query={query.replace(' ', '+')}",
-         "pat": r'class="[^"]*card-title[^"]*"[^>]*>(.*?)</[^>]+>'},
-        {"name": "hurriyet",  "url": f"https://www.hurriyet.com.tr/arama/?q={query.replace(' ', '+')}",
-         "pat": r'<h[23][^>]*class="[^"]*title[^"]*"[^>]*>(.*?)</h[23]>'},
-        {"name": "sabah",     "url": f"https://www.sabah.com.tr/ara?q={query.replace(' ', '+')}",
-         "pat": r'<h[23][^>]*>(.*?)</h[23]>'},
-        {"name": "haberturk", "url": f"https://www.haberturk.com/arama?q={query.replace(' ', '+')}",
-         "pat": r'class="[^"]*content-title[^"]*"[^>]*>(.*?)</[a-z]+>'},
-        {"name": "milliyet",  "url": f"https://www.milliyet.com.tr/arama/{query.replace(' ', '-')}/",
-         "pat": r'class="[^"]*card__title[^"]*"[^>]*>(.*?)</[^>]+>'},
+        {"name": "ntv",       "url": f"https://www.ntv.com.tr/arama?query={query.replace(' ', '+')}", "pat": r'class="[^"]*card-title[^"]*"[^>]*>(.*?)</[^>]+>'},
+        {"name": "hurriyet",  "url": f"https://www.hurriyet.com.tr/arama/?q={query.replace(' ', '+')}", "pat": r'<h[23][^>]*class="[^"]*title[^"]*"[^>]*>(.*?)</h[23]>'},
+        {"name": "sabah",     "url": f"https://www.sabah.com.tr/ara?q={query.replace(' ', '+')}", "pat": r'<h[23][^>]*>(.*?)</h[23]>'},
+        {"name": "haberturk", "url": f"https://www.haberturk.com/arama?q={query.replace(' ', '+')}", "pat": r'class="[^"]*content-title[^"]*"[^>]*>(.*?)</[a-z]+>'},
+        {"name": "milliyet",  "url": f"https://www.milliyet.com.tr/arama/{query.replace(' ', '-')}/", "pat": r'class="[^"]*card__title[^"]*"[^>]*>(.*?)</[^>]+>'},
     ]
-
     async def fetch_site(src: dict) -> list[dict]:
         site_results = []
         status, html = await safe_get(sess, src["url"], timeout=12)
@@ -842,7 +736,6 @@ async def scrape_turkish_news_sites(query: str, sess: aiohttp.ClientSession) -> 
                 if t and 15 < len(t) < 300:
                     site_results.append({"snippet": t, "src": src["name"]})
         return site_results
-
     nested = await asyncio.gather(*[fetch_site(s) for s in sources], return_exceptions=True)
     results = []
     for r in nested:
@@ -850,13 +743,11 @@ async def scrape_turkish_news_sites(query: str, sess: aiohttp.ClientSession) -> 
             results.extend(r)
     return results[:8]
 
-# ── 16. Spor: Mackolik (canlı maç & puan durumu) ─────────
 async def scrape_mackolik(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     msg = query.lower()
     do_score = any(w in msg for w in ["skor", "sonuç", "maç", "kazandı", "bitti", "gol"])
     do_table = any(w in msg for w in ["puan durumu", "puan tablosu", "sıralama", "lider"])
-
     if do_score:
         status, html = await safe_get(sess, "https://www.mackolik.com/canli-sonuclar",
             headers=rand_headers({"Referer": "https://www.mackolik.com/"}), timeout=12)
@@ -867,15 +758,11 @@ async def scrape_mackolik(query: str, sess: aiohttp.ClientSession) -> list[dict]
                 r'class="[^"]*match-away[^"]*"[^>]*>(.*?)</[^>]+>',
                 html, re.DOTALL)
             for home, score, away in matches[:8]:
-                h = clean_html(home)
-                s = clean_html(score)
-                a = clean_html(away)
+                h, s, a = clean_html(home), clean_html(score), clean_html(away)
                 if h and a:
                     results.append({"snippet": f"{h} {s} {a}", "src": "mackolik"})
-
     if do_table:
-        status, html = await safe_get(sess,
-            "https://www.mackolik.com/lig/turkiye/super-lig/puan-durumu",
+        status, html = await safe_get(sess, "https://www.mackolik.com/lig/turkiye/super-lig/puan-durumu",
             headers=rand_headers({"Referer": "https://www.mackolik.com/"}), timeout=12)
         if status == 200 and html:
             rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL)
@@ -885,19 +772,13 @@ async def scrape_mackolik(query: str, sess: aiohttp.ClientSession) -> list[dict]
                     results.append({"snippet": " | ".join(cells[:7]), "src": "mackolik_table"})
     return results
 
-# ── 17. Spor: Flashscore (güncel skorlar) ────────────────
 async def scrape_flashscore(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
     msg = query.lower()
-    spor_teams = [
-        "fenerbahçe", "galatasaray", "beşiktaş", "trabzonspor",
-        "başakşehir", "sivasspor", "konyaspor", "antalyaspor",
-        "alanyaspor", "kasımpaşa", "kayserispor"
-    ]
+    spor_teams = ["fenerbahçe", "galatasaray", "beşiktaş", "trabzonspor", "başakşehir",
+                  "sivasspor", "konyaspor", "antalyaspor", "alanyaspor", "kasımpaşa", "kayserispor"]
     team = next((t for t in spor_teams if t in msg), None)
-
-    status, html = await safe_get(sess,
-        "https://www.flashscore.com.tr/futbol/turkiye/super-lig/sonuclar/",
+    status, html = await safe_get(sess, "https://www.flashscore.com.tr/futbol/turkiye/super-lig/sonuclar/",
         headers=rand_headers({"Referer": "https://www.flashscore.com.tr/"}), timeout=14)
     if status == 200 and html:
         blocks = re.findall(r'class="[^"]*event__match[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
@@ -917,48 +798,27 @@ async def scrape_flashscore(query: str, sess: aiohttp.ClientSession) -> list[dic
     return results[:6]
 
 # ============================================================
-# ANA ORKESTRATÖR
+# ORKESTRATÖR
 # ============================================================
 SCRAPER_RULES = [
-    (r"(dolar|euro|sterlin|gbp|usd|eur|kur|döviz|frank|yen|riyal|ruble)",
-     ["exchange", "alpha_vantage", "ddg_html"]),
-    (r"(bitcoin|btc|ethereum|eth|kripto|bnb|solana|dogecoin|coin|xrp|cardano|ada)",
-     ["crypto", "ddg_html"]),
-    (r"(bist|borsa\s*istanbul|thyao|thy|garan|akbnk|garanti|akbank|yapı\s*kredi|ykbnk|"
-     r"arçelik|arclk|ereğli|eregl|aselsan|asels|tupraş|tuprs|sabancı|sahol|koç|kchol|"
-     r"bimas|bim|migros)",
-     ["bist", "ddg_html"]),
-    (r"(altın|gram\s*altın|çeyrek\s*altın|gold|gümüş|petrol|emtia)",
-     ["yahoo", "exchange"]),
-    (r"(nasdaq|s&p|dow\s*jones|apple\s*hisse|tesla\s*hisse|nvidia\s*hisse)",
-     ["yahoo"]),
-    (r"(hava\s*durumu|hava\s*nasıl|kaç\s*derece|sıcaklık|yağmur\s*var|kar\s*var|rüzgar|nem\s*oranı)",
-     ["weather"]),
-    (r"(iftar|sahur|namaz\s*vakti|ezan|imsak|akşam\s*ezanı)",
-     ["prayer"]),
-    (r"saat\s*kaç",
-     ["clock"]),
-    (r"(deprem|sarsıntı|kandilli|richter|kaç\s*şiddet)",
-     ["earthquake", "gnews"]),
-    (r"(puan\s*durumu|puan\s*tablosu|süper\s*lig\s*(sıra|puan|lider|kaçıncı))",
-     ["mackolik", "flashscore", "ddg_html"]),
-    (r"(fenerbahçe|galatasaray|beşiktaş|trabzonspor|başakşehir|sivasspor|konyaspor|"
-     r"alanyaspor|kasımpaşa|antalyaspor)",
-     ["flashscore", "mackolik", "gnews", "apifootball"]),
-    (r"(maç\s*sonuç|skor\s*kaç|kim\s*kazandı|bitti\s*mi|gol\s*attı|transfer\s*haberi)",
-     ["flashscore", "mackolik", "gnews", "apifootball"]),
-    (r"(son\s*dakika|breaking|acil\s*haber|flaş)",
-     ["rss_news", "gnews", "newsapi"]),
-    (r"(gündem|ne\s*oluyor|bugün\s*ne\s*var|haberler|önemli\s*haber)",
-     ["rss_news", "gnews", "turkish_news", "newsapi"]),
-    (r"(nedir|kimdir|nerede|ne\s*zaman|tarihçe|hakkında|tarihi)",
-     ["wikipedia", "ddg_instant"]),
-    (r"(seçim|cumhurbaşkanı|bakan|hükümet|tbmm|meclis).*(güncel|son|bugün|şu\s*an)",
-     ["rss_news", "gnews"]),
-    (r"(ekonomi|enflasyon|faiz|tüfe|büyüme|gdp|gsyh).*(son|güncel|bugün|açıklandı)",
-     ["rss_news", "ddg_html"]),
+    (r"(dolar|euro|sterlin|gbp|usd|eur|kur|döviz|frank|yen|riyal|ruble)", ["exchange", "alpha_vantage", "ddg_html"]),
+    (r"(bitcoin|btc|ethereum|eth|kripto|bnb|solana|dogecoin|coin|xrp|cardano|ada)", ["crypto", "ddg_html"]),
+    (r"(bist|borsa\s*istanbul|thyao|thy|garan|akbnk|garanti|akbank|yapı\s*kredi|ykbnk|arçelik|arclk|ereğli|eregl|aselsan|asels|tupraş|tuprs|sabancı|sahol|koç|kchol|bimas|bim|migros)", ["bist", "ddg_html"]),
+    (r"(altın|gram\s*altın|çeyrek\s*altın|gold|gümüş|petrol|emtia)", ["yahoo", "exchange"]),
+    (r"(nasdaq|s&p|dow\s*jones|apple\s*hisse|tesla\s*hisse|nvidia\s*hisse)", ["yahoo"]),
+    (r"(hava\s*durumu|hava\s*nasıl|kaç\s*derece|sıcaklık|yağmur\s*var|kar\s*var|rüzgar|nem\s*oranı)", ["weather"]),
+    (r"(iftar|sahur|namaz\s*vakti|ezan|imsak|akşam\s*ezanı)", ["prayer"]),
+    (r"saat\s*kaç", ["clock"]),
+    (r"(deprem|sarsıntı|kandilli|richter|kaç\s*şiddet)", ["earthquake", "gnews"]),
+    (r"(puan\s*durumu|puan\s*tablosu|süper\s*lig\s*(sıra|puan|lider|kaçıncı))", ["mackolik", "flashscore", "ddg_html"]),
+    (r"(fenerbahçe|galatasaray|beşiktaş|trabzonspor|başakşehir|sivasspor|konyaspor|alanyaspor|kasımpaşa|antalyaspor)", ["flashscore", "mackolik", "gnews", "apifootball"]),
+    (r"(maç\s*sonuç|skor\s*kaç|kim\s*kazandı|bitti\s*mi|gol\s*attı|transfer\s*haberi)", ["flashscore", "mackolik", "gnews", "apifootball"]),
+    (r"(son\s*dakika|breaking|acil\s*haber|flaş)", ["rss_news", "gnews", "newsapi"]),
+    (r"(gündem|ne\s*oluyor|bugün\s*ne\s*var|haberler|önemli\s*haber)", ["rss_news", "gnews", "turkish_news", "newsapi"]),
+    (r"(nedir|kimdir|nerede|ne\s*zaman|tarihçe|hakkında|tarihi)", ["wikipedia", "ddg_instant"]),
+    (r"(seçim|cumhurbaşkanı|bakan|hükümet|tbmm|meclis).*(güncel|son|bugün|şu\s*an)", ["rss_news", "gnews"]),
+    (r"(ekonomi|enflasyon|faiz|tüfe|büyüme|gdp|gsyh).*(son|güncel|bugün|açıklandı)", ["rss_news", "ddg_html"]),
 ]
-
 DEFAULT_SCRAPERS = ["ddg_instant", "ddg_html"]
 
 
@@ -985,7 +845,6 @@ async def run_scrapers(query: str, names: list[str], sess: aiohttp.ClientSession
         elif n == "newsapi":       tasks.append(scrape_newsapi(query, sess))
         elif n == "alpha_vantage": tasks.append(scrape_alpha_vantage(query, sess))
         elif n == "apifootball":   tasks.append(scrape_apifootball(query, sess))
-
     nested = await asyncio.gather(*tasks, return_exceptions=True)
     results = []
     for r in nested:
@@ -998,31 +857,25 @@ async def fetch_live_data_full(query: str, sess: aiohttp.ClientSession) -> str:
     cached = cache_get(query)
     if cached:
         return cached
-
     msg = query.lower()
     selected = set(DEFAULT_SCRAPERS)
     for pattern, scrapers in SCRAPER_RULES:
         if re.search(pattern, msg):
             selected.update(scrapers)
-
     print(f"🔍 '{query}' → scraper'lar: {sorted(selected)}")
     results = await run_scrapers(query, list(selected), sess)
-
     if len(results) < 2:
         print(f"⚠️ Az sonuç ({len(results)}), Bing ekleniyor...")
         results.extend(await scrape_bing(query, sess))
-
     seen, unique = set(), []
     for r in results:
         k = r.get("snippet", "")[:70]
         if k and k not in seen:
             seen.add(k)
             unique.append(r)
-
     print(f"📊 {len(unique)} benzersiz sonuç")
     if not unique:
         return ""
-
     summary = await summarize_with_ai(query, unique, sess)
     if summary:
         cache_set(query, summary)
@@ -1035,21 +888,15 @@ async def summarize_with_ai(question: str, items: list[dict], sess: aiohttp.Clie
         for r in items[:8]
     )
     prompt = (
-        f"Kullanıcı sorusu: '{question}'\n\n"
-        f"Toplanan güncel veriler:\n{snippets}\n\n"
-        "GÖREV: Yukarıdaki verilerden soruya EN DOĞRUDAN ve EN GÜNCEL cevabı ver.\n"
-        "KURALLAR:\n"
-        "- 'bulunamadı', 'bilmiyorum', 'ulaşamadım' YAZMA\n"
-        "- Sayı/tarih/skor/fiyat/saat varsa OLDUĞU GİBİ yaz\n"
-        "- Maksimum 3 cümle\n"
-        "- Kaynak adı veya URL yazma\n"
-        "- Türkçe yaz"
+        f"Kullanıcı sorusu: '{question}'\n\nToplanan güncel veriler:\n{snippets}\n\n"
+        "GÖREV: Soruya EN DOĞRUDAN ve EN GÜNCEL cevabı ver.\n"
+        "- 'bulunamadı', 'bilmiyorum' YAZMA\n"
+        "- Sayı/tarih/skor/fiyat varsa OLDUĞU GİBİ yaz\n"
+        "- Maksimum 3 cümle, Türkçe yaz"
     )
-
     key = await get_next_gemini_key()
     if not key:
         return _fallback_raw(items)
-
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.05, "maxOutputTokens": 300},
@@ -1066,7 +913,6 @@ async def summarize_with_ai(question: str, items: list[dict], sess: aiohttp.Clie
                 await mark_key_rate_limited(key)
     except Exception as e:
         print(f"⚠️ AI özet hatası: {e}")
-
     return _fallback_raw(items)
 
 
@@ -1077,7 +923,6 @@ def _fallback_raw(items: list[dict]) -> str:
         if s and s not in parts:
             parts.append(s)
     return " | ".join(parts)[:600] if parts else ""
-
 
 # ============================================================
 # ARAMA GEREKLİ Mİ?
@@ -1134,20 +979,13 @@ def _optimize_query(original: str, msg: str) -> str:
     for team in teams:
         if team in msg:
             return f"{team} son maç sonucu {today}"
-    if re.search(r"(puan\s*durumu|puan\s*tablosu)", msg):
-        return f"süper lig puan durumu {today}"
-    if re.search(r"(dolar|usd)", msg):
-        return f"dolar TL kuru anlık {today}"
-    if re.search(r"(euro|eur)", msg):
-        return f"euro TL kuru anlık {today}"
-    if re.search(r"(altın|gram\s*altın)", msg):
-        return f"gram altın fiyatı {today}"
-    if re.search(r"(bitcoin|btc)", msg):
-        return "bitcoin fiyatı usd try bugün"
-    if "saat kaç" in msg:
-        return "türkiye saat"
-    if re.search(r"(son\s*dakika|haber)", msg):
-        return f"{original} {today}"
+    if re.search(r"(puan\s*durumu|puan\s*tablosu)", msg): return f"süper lig puan durumu {today}"
+    if re.search(r"(dolar|usd)", msg):                    return f"dolar TL kuru anlık {today}"
+    if re.search(r"(euro|eur)", msg):                     return f"euro TL kuru anlık {today}"
+    if re.search(r"(altın|gram\s*altın)", msg):           return f"gram altın fiyatı {today}"
+    if re.search(r"(bitcoin|btc)", msg):                  return "bitcoin fiyatı usd try bugün"
+    if "saat kaç" in msg:                                 return "türkiye saat"
+    if re.search(r"(son\s*dakika|haber)", msg):           return f"{original} {today}"
     return original
 
 
@@ -1175,245 +1013,8 @@ async def _ai_decide(message: str, sess: aiohttp.ClientSession) -> bool:
         pass
     return False
 
-
 # ============================================================
-# ═══════════════════════════════════════════════════════════
-#   SMART TOKEN BUDGET SİSTEMİ
-# ═══════════════════════════════════════════════════════════
-# ============================================================
-
-# ── 1. KATEGORİ TANIMLARI ─────────────────────────────────
-
-@dataclass
-class TierConfig:
-    """Bir karmaşıklık katmanının tüm ayarları."""
-    model: str
-    max_output_tokens: int
-    history_turns: int
-    web_search: bool
-    web_context_chars: int
-    temperature: float
-    top_p: float
-
-
-TIERS: dict[str, TierConfig] = {
-    # Selamlama, kısa soru, tek kelime cevap
-    "simple": TierConfig(
-        model="gemini-2.0-flash",
-        max_output_tokens=400,
-        history_turns=2,
-        web_search=False,
-        web_context_chars=0,
-        temperature=0.5,
-        top_p=0.85,
-    ),
-    # Çok adımlı soru, açıklama isteği, küçük hesaplama
-    "medium": TierConfig(
-        model="gemini-2.0-flash",
-        max_output_tokens=900,
-        history_turns=4,
-        web_search=True,
-        web_context_chars=1200,
-        temperature=0.65,
-        top_p=0.90,
-    ),
-    # Derin analiz, kod üretimi, güncel haber, karşılaştırma
-    "complex": TierConfig(
-        model="gemini-2.5-flash",
-        max_output_tokens=1800,
-        history_turns=8,
-        web_search=True,
-        web_context_chars=2500,
-        temperature=0.7,
-        top_p=0.92,
-    ),
-}
-
-# ── 2. SORGU SINIFLANDIRICI ────────────────────────────────
-
-_SIMPLE_PATTERNS = re.compile(
-    r"^(merhaba|selam|hey|hi|hello|naber|nasılsın|teşekkür|tamam|evet|hayır|"
-    r"\d+\s*[\+\-\*\/]\s*\d+|ne zaman|saat kaç|bugün|yarın|özetle\b.{0,60})$",
-    re.IGNORECASE | re.UNICODE,
-)
-
-_COMPLEX_PATTERNS = re.compile(
-    r"(yaz\b.*kod|kod\b.*yaz|program|analiz|karşılaştır|detaylı|açıkla|neden|nasıl çalışır|"
-    r"makale|rapor|ödev|proje|hata ayıkla|debug|optimiz|tablo|liste\b.{10,}|"
-    r"write|code|analyze|compare|explain|essay|report|detailed|how does|why does|"
-    r"difference between|pros and cons|summarize .{30,})",
-    re.IGNORECASE | re.UNICODE,
-)
-
-def classify_query(message: str) -> str:
-    """Mesajı 'simple' / 'medium' / 'complex' olarak sınıflandır."""
-    msg = message.strip()
-    if len(msg) < 35 and _SIMPLE_PATTERNS.search(msg):
-        return "simple"
-    if len(msg) > 120 or _COMPLEX_PATTERNS.search(msg):
-        return "complex"
-    return "medium"
-
-# ── 3. RESPONSE CACHE (TTL = 5 dk) ───────────────────────
-
-@dataclass
-class _CacheEntry:
-    response: str
-    expires_at: float
-
-class ResponseCache:
-    """Aynı soruya aynı cevabı tekrar üretme."""
-    def __init__(self, ttl_seconds: int = 300, max_size: int = 256):
-        self._store: dict[str, _CacheEntry] = {}
-        self.ttl = ttl_seconds
-        self.max_size = max_size
-
-    def _key(self, message: str, tier: str) -> str:
-        raw = f"{tier}:{message.strip().lower()}"
-        return hashlib.md5(raw.encode()).hexdigest()
-
-    def get(self, message: str, tier: str) -> Optional[str]:
-        k = self._key(message, tier)
-        entry = self._store.get(k)
-        if entry and time.time() < entry.expires_at:
-            return entry.response
-        if entry:
-            del self._store[k]
-        return None
-
-    def set(self, message: str, tier: str, response: str) -> None:
-        if len(self._store) >= self.max_size:
-            oldest = min(self._store, key=lambda k: self._store[k].expires_at)
-            del self._store[oldest]
-        k = self._key(message, tier)
-        self._store[k] = _CacheEntry(response, time.time() + self.ttl)
-
-    def invalidate_expired(self) -> None:
-        now = time.time()
-        self._store = {k: v for k, v in self._store.items() if v.expires_at > now}
-
-# Modül seviyesinde tek cache nesnesi
-_response_cache = ResponseCache(ttl_seconds=300, max_size=256)
-
-# ── 4. AKILLI GEÇMİŞ SIKIŞTIRICISI ───────────────────────
-
-def smart_trim_history(conversation: list[dict], tier: str) -> list[dict]:
-    """Konuşma geçmişini tier'a göre kademeli olarak sıkıştır."""
-    cfg = TIERS[tier]
-    max_turns = cfg.history_turns
-    max_msg_chars = 300 if tier == "simple" else (600 if tier == "medium" else 1200)
-
-    # Son N turu al (1 tur = user + model = 2 eleman)
-    keep = conversation[-(max_turns * 2):]
-
-    trimmed = []
-    for msg in keep:
-        text = msg.get("message", "")
-        if len(text) > max_msg_chars:
-            text = text[:max_msg_chars] + "…[kısaltıldı]"
-        trimmed.append({**msg, "message": text})
-
-    return trimmed
-
-# ── 5. WEB VERİSİ KESME ───────────────────────────────────
-
-def trim_web_context(raw: str, tier: str) -> str:
-    """Web araması özetini tier'a göre kırp, cümle ortasında kesme."""
-    cfg = TIERS[tier]
-    limit = cfg.web_context_chars
-    if not raw or limit == 0:
-        return ""
-    if len(raw) <= limit:
-        return raw
-    cut = raw[:limit]
-    last_period = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
-    if last_period > limit // 2:
-        cut = cut[: last_period + 1]
-    return cut
-
-# ── 6. TAHMİNİ TOKEN LOGU ─────────────────────────────────
-
-def _log_estimated_tokens(payload: dict, tier: str) -> None:
-    """1 token ≈ 4 karakter tahminiyle input boyutunu logla."""
-    total_chars = 0
-    for turn in payload.get("contents", []):
-        for part in turn.get("parts", []):
-            total_chars += len(part.get("text", ""))
-    sys_chars = len(
-        payload.get("system_instruction", {}).get("parts", [{}])[0].get("text", "")
-    )
-    total_chars += sys_chars
-    est_tokens = total_chars // 4
-    cfg = TIERS[tier]
-    print(
-        f"📊 Tahmini input: ~{est_tokens} tok | "
-        f"max output: {cfg.max_output_tokens} tok | "
-        f"toplam budget: ~{est_tokens + cfg.max_output_tokens} tok"
-    )
-
-# ── 7. PAYLOAD OLUŞTURUCU ─────────────────────────────────
-
-def build_payload(
-    message: str,
-    conversation: list[dict],
-    tier: str,
-    live_context: str,
-    system_prompt: str,
-    image_data: Optional[str] = None,
-    custom_prompt: str = "",
-) -> tuple[dict, str]:
-    """Tier'a göre optimize edilmiş Gemini payload üret."""
-    cfg = TIERS[tier]
-
-    # Geçmişi sıkıştır
-    trimmed_history = smart_trim_history(conversation, tier)
-
-    # Web bağlamını kırp
-    raw_web = live_context.replace("<WEB_DATA>", "").replace("</WEB_DATA>", "")
-    trimmed_web = trim_web_context(raw_web, tier)
-    web_block = f"\n\n<WEB_DATA>{trimmed_web}</WEB_DATA>" if trimmed_web else ""
-
-    # Konuşma geçmişini dönüştür
-    contents = []
-    for m in trimmed_history:
-        contents.append({
-            "role": "user" if m["sender"] == "user" else "model",
-            "parts": [{"text": m["message"]}],
-        })
-
-    # Kullanıcının bu mesajı
-    user_parts: list[dict] = [{"text": f"{message}{web_block}"}]
-    if image_data:
-        img = image_data
-        if "," in img:
-            _, img = img.split(",", 1)
-        user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img}})
-    contents.append({"role": "user", "parts": user_parts})
-
-    # Sistem prompt
-    sys_prompt = system_prompt
-    if custom_prompt:
-        sys_prompt += f"\n\n[EK TALİMAT]: {custom_prompt}"
-
-    payload: dict = {
-        "contents": contents,
-        "system_instruction": {"parts": [{"text": sys_prompt}]},
-        "generationConfig": {
-            "temperature": cfg.temperature,
-            "topP": cfg.top_p,
-            "maxOutputTokens": cfg.max_output_tokens,
-        },
-    }
-
-    # Web araması gereken tierlarda google_search ekle
-    if cfg.web_search:
-        payload["tools"] = [{"google_search": {}}]
-
-    return payload, cfg.model
-
-
-# ============================================================
-# SİSTEM PROMPTU
+# SİSTEM PROMPTU & GEÇMİŞ
 # ============================================================
 def get_nova_date():
     tr_tz = timezone(timedelta(hours=3))
@@ -1450,7 +1051,6 @@ web verileri yada başka bilgide en önemli bilgili yeri **çift tırnak** için
 • şuan hem sen hem geliştiricin en iyi durumdasınız
 • sen zeki bir asistansın bence chatgpt ile yarışırsın 
 
-
 ━━━ KONUŞMA ━━━
 • Kısa, net, enerjik ⚡ | 1-4 emoji
 • Direkt konuya gir
@@ -1460,8 +1060,19 @@ web verileri yada başka bilgide en önemli bilgili yeri **çift tırnak** için
 kullanıcıya kullanıcıdan daha çok önem ver
 """
 
+def _trim_history(conversation: list[dict], max_chars: int = 6000) -> list[dict]:
+    """Son mesajlardan geriye git, toplam karakter limitini aşma. Her mesaj max 800 chr."""
+    trimmed, total = [], 0
+    for msg in reversed(conversation[-16:]):
+        text = msg.get("message", "")[:800]
+        total += len(text)
+        if total > max_chars:
+            break
+        trimmed.insert(0, {**msg, "message": text})
+    return trimmed
+
 # ============================================================
-# ANA CEVAP MOTORU  (Smart Token Budget entegreli)
+# ANA CEVAP MOTORU
 # ============================================================
 async def gemma_cevap_async(
     message: str,
@@ -1474,55 +1085,53 @@ async def gemma_cevap_async(
     if not GEMINI_API_KEYS:
         return "⚠️ API anahtarı eksik."
 
-    # ── Adım 1: Sorguyu sınıflandır ──────────────────────────────
-    tier = classify_query(message)
-
-    # Görsel veya custom_prompt varsa en az medium'a yükselt
-    if image_data or custom_prompt:
-        if tier == "simple":
-            tier = "medium"
-
-    print(f"🎯 Tier: {tier} | Mesaj: {message[:60]}...")
-
-    # ── Adım 2: Response cache kontrolü (simple + medium, görselsiz) ──
-    if tier in ("simple", "medium") and not image_data:
-        cached = _response_cache.get(message, tier)
+    # ── 1. Response cache ─────────────────────────────────────────
+    if _is_cacheable(message) and not image_data and not custom_prompt:
+        cached = resp_cache_get(message)
         if cached:
             print("⚡ Response cache hit!")
             return cached
 
-    # ── Adım 3: Web araması (tier izin veriyorsa) ────────────────
+    # ── 2. Web araması ────────────────────────────────────────────
     live_context = ""
-    if TIERS[tier].web_search:
-        needed, opt_query = await should_search(message, sess)
-        if needed:
-            q = opt_query or message
-            print(f"🌐 Arama ({tier}): '{q}'")
-            summary = await fetch_live_data_full(q, sess)
-            if summary:
-                live_context = summary
-                print(f"✅ Web verisi: {len(summary)} chr → kesilecek: {TIERS[tier].web_context_chars}")
-            else:
-                print("❌ Web verisi boş")
-    else:
-        print(f"⏭️  Web araması atlandı (tier={tier})")
+    needed, opt_query = await should_search(message, sess)
+    if needed:
+        q = opt_query or message
+        print(f"🌐 Arama: '{q}'")
+        summary = await fetch_live_data_full(q, sess)
+        if summary:
+            live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
+            print(f"✅ WEB_DATA ({len(summary)} chr)")
 
-    # ── Adım 4: Payload oluştur (tier'a göre optimize) ───────────
+    # ── 3. Payload ────────────────────────────────────────────────
+    trimmed_history = _trim_history(conversation)
+    contents = []
+    for m in trimmed_history:
+        contents.append({
+            "role": "user" if m["sender"] == "user" else "model",
+            "parts": [{"text": m["message"]}]
+        })
+
+    user_parts = [{"text": f"{message}{live_context}"}]
+    if image_data:
+        img = image_data
+        if "," in img:
+            _, img = img.split(",", 1)
+        user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img}})
+    contents.append({"role": "user", "parts": user_parts})
+
     sys_prompt = get_system_prompt()
-    payload, model_name = build_payload(
-        message=message,
-        conversation=conversation,
-        tier=tier,
-        live_context=live_context,
-        system_prompt=sys_prompt,
-        image_data=image_data,
-        custom_prompt=custom_prompt,
-    )
+    if custom_prompt:
+        sys_prompt += f"\n\n[EK TALİMAT]: {custom_prompt}"
 
-    # ── Adım 5: Token tahmini logla ───────────────────────────────
-    _log_estimated_tokens(payload, tier)
+    payload = {
+        "contents": contents,
+        "system_instruction": {"parts": [{"text": sys_prompt}]},
+        "tools": [{"google_search": {}}],
+        "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000},
+    }
 
-    # ── Adım 6: API çağrısı (key rotation korundu) ───────────────
+    # ── 4. API çağrısı ────────────────────────────────────────────
     tried = set()
     max_attempts = len(GEMINI_API_KEYS) * 2
 
@@ -1546,10 +1155,10 @@ async def gemma_cevap_async(
 
         tried.add(key)
         key_idx = GEMINI_API_KEYS.index(key)
-        print(f"🔑 Key #{key_idx} | model={model_name} | tier={tier} (attempt {attempt+1}/{max_attempts})")
+        print(f"🔑 Key #{key_idx} (attempt {attempt+1}/{max_attempts})")
 
         try:
-            url = f"{GEMINI_REST_URL_BASE}/{model_name}:generateContent?key={key}"
+            url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
             async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
 
                 if resp.status == 200:
@@ -1558,37 +1167,33 @@ async def gemma_cevap_async(
                     result = " ".join(p["text"] for p in parts if "text" in p).strip()
                     if result:
                         print(f"✅ Key #{key_idx} başarılı ({len(result)} chr)")
-                        # Başarılı cevabı response cache'e yaz
-                        if tier in ("simple", "medium") and not image_data:
-                            _response_cache.set(message, tier, result)
+                        if _is_cacheable(message) and not image_data and not custom_prompt:
+                            resp_cache_set(message, result)
                         return result
 
                 elif resp.status == 429:
-                    print(f"⏳ Key #{key_idx} rate-limited (429)")
+                    print(f"⏳ Key #{key_idx} rate-limited")
                     await mark_key_rate_limited(key)
                     continue
 
                 elif resp.status == 503:
-                    print(f"⚠️ Key #{key_idx} 503 yoğunluk, 2s bekle...")
+                    print(f"⚠️ Key #{key_idx} 503, 2s bekle...")
                     tried.discard(key)
                     await asyncio.sleep(2)
                     continue
 
                 elif resp.status == 400:
-                    # google_search desteklenmiyorsa tool'suz dene
-                    payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
-                    async with sess.post(url, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as r2:
+                    payload_nt = {k: v for k, v in payload.items() if k != "tools"}
+                    async with sess.post(url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=40)) as r2:
                         if r2.status == 200:
                             d = await r2.json()
                             parts = d["candidates"][0]["content"].get("parts", [])
                             return " ".join(p["text"] for p in parts if "text" in p).strip()
 
                 elif resp.status == 404:
-                    # Model bulunamazsa flash fallback
-                    fallback_model = "gemini-1.5-flash"
-                    fb_url = f"{GEMINI_REST_URL_BASE}/{fallback_model}:generateContent?key={key}"
-                    payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
-                    async with sess.post(fb_url, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as r2:
+                    fb_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
+                    payload_nt = {k: v for k, v in payload.items() if k != "tools"}
+                    async with sess.post(fb_url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=40)) as r2:
                         if r2.status == 200:
                             d = await r2.json()
                             parts = d["candidates"][0]["content"].get("parts", [])
@@ -1613,10 +1218,6 @@ async def gemma_cevap_async(
 @app.before_serving
 async def startup():
     print("🚀 Nova 5.0 başlatılıyor...")
-    print("🌐 17 scraper: DDG ×2, Bing, Google News RSS, ExchangeRate, CoinGecko,")
-    print("   Yahoo Finance, BIST, Open-Meteo, Aladhan, Kandilli, Wikipedia,")
-    print("   RSS ×9 kaynak, 5 Türk haber sitesi, Mackolik, Flashscore")
-    print("🧠 Smart Token Budget: simple/medium/complex tier sistemi aktif")
     global session
     connector = aiohttp.TCPConnector(ssl=False, limit=200, limit_per_host=15)
     session = aiohttp.ClientSession(
@@ -1627,7 +1228,6 @@ async def startup():
     await load_data_to_memory()
     app.add_background_task(keep_alive)
     app.add_background_task(background_save_worker)
-    app.add_background_task(cache_cleanup_worker)  # ← Yeni: cache temizleme
 
 @app.after_serving
 async def cleanup():
@@ -1659,13 +1259,6 @@ async def background_save_worker():
         await asyncio.sleep(20)
         await save_memory_to_disk()
 
-async def cache_cleanup_worker():
-    """Her 10 dakikada bir süresi dolmuş response cache girişlerini temizle."""
-    while True:
-        await asyncio.sleep(600)
-        _response_cache.invalidate_expired()
-        print(f"🧹 Response cache temizlendi. Kalan: {len(_response_cache._store)} giriş")
-
 async def save_memory_to_disk(force=False):
     files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE,
                  "api_cache": CACHE_FILE, "tokens": TOKENS_FILE}
@@ -1685,11 +1278,7 @@ async def save_memory_to_disk(force=False):
 # ============================================================
 @app.route("/")
 async def home():
-    return (
-        f"Nova 5.0 — {get_nova_date()} | 17 kaynak aktif ✅ | "
-        f"Smart Token Budget aktif 🧠 | "
-        f"Response cache: {len(_response_cache._store)} giriş"
-    )
+    return f"Nova 5.0 — {get_nova_date()} | 17 kaynak aktif ✅ | Cache: {len(_RESP_CACHE)} giriş"
 
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 async def chat():
@@ -1745,40 +1334,11 @@ async def get_history():
     user_id = request.args.get("userId", "anon")
     return jsonify(GLOBAL_CACHE["history"].get(user_id, {})), 200
 
-# Debug endpoint — scraper + tier test
 @app.route("/api/debug/search")
 async def debug_search():
     q = request.args.get("q", "dolar kaç")
     result = await fetch_live_data_full(q, session)
-    tier = classify_query(q)
-    return jsonify({
-        "query": q,
-        "tier": tier,
-        "model": TIERS[tier].model,
-        "max_output_tokens": TIERS[tier].max_output_tokens,
-        "result": result,
-        "search_cache_size": len(_SEARCH_CACHE),
-        "response_cache_size": len(_response_cache._store),
-    })
-
-@app.route("/api/debug/tiers")
-async def debug_tiers():
-    """Tier konfigürasyonlarını ve anlık cache durumunu göster."""
-    return jsonify({
-        "tiers": {
-            name: {
-                "model": cfg.model,
-                "max_output_tokens": cfg.max_output_tokens,
-                "history_turns": cfg.history_turns,
-                "web_search": cfg.web_search,
-                "web_context_chars": cfg.web_context_chars,
-                "temperature": cfg.temperature,
-            }
-            for name, cfg in TIERS.items()
-        },
-        "response_cache_entries": len(_response_cache._store),
-        "search_cache_entries": len(_SEARCH_CACHE),
-    })
+    return jsonify({"query": q, "result": result, "search_cache": len(_SEARCH_CACHE), "resp_cache": len(_RESP_CACHE)})
 
 # ============================================================
 # WEBSOCKET
@@ -1796,55 +1356,35 @@ async def ws_chat_handler():
 
             history = GLOBAL_CACHE["history"].setdefault(user_id, {}).setdefault(chat_id, [])
 
-            # Tier belirle
-            tier = classify_query(user_msg)
-            print(f"🎯 WS Tier: {tier} | Mesaj: {user_msg[:50]}...")
-
             live_context = ""
-            if TIERS[tier].web_search:
-                needed, q = await should_search(user_msg, session)
-                if needed:
-                    summary = await fetch_live_data_full(q or user_msg, session)
-                    if summary:
-                        live_context = summary
+            needed, q = await should_search(user_msg, session)
+            if needed:
+                summary = await fetch_live_data_full(q or user_msg, session)
+                if summary:
+                    live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
 
-            # Tier'a göre geçmişi ve web verisini kırp
-            trimmed_history = smart_trim_history(history, tier)
-            trimmed_web = trim_web_context(live_context, tier)
-            web_block = f"\n\n<WEB_DATA>{trimmed_web}</WEB_DATA>" if trimmed_web else ""
-
-            cfg = TIERS[tier]
-            key = await get_next_gemini_key()
-            if not key:
-                await websocket.send("⚠️ API anahtarı bulunamadı.")
-                await websocket.send("[END]")
-                return
-
-            # Streaming payload
+            trimmed_history = _trim_history(history)
             contents = []
             for m in trimmed_history:
                 contents.append({
                     "role": "user" if m["sender"] == "user" else "model",
                     "parts": [{"text": m["message"]}],
                 })
-            contents.append({"role": "user", "parts": [{"text": f"{user_msg}{web_block}"}]})
+            contents.append({"role": "user", "parts": [{"text": f"{user_msg}{live_context}"}]})
 
+            key = await get_next_gemini_key()
+            if not key:
+                await websocket.send("⚠️ API anahtarı bulunamadı.")
+                await websocket.send("[END]")
+                return
+
+            url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
             stream_payload = {
                 "contents": contents,
                 "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-                "generationConfig": {
-                    "temperature": cfg.temperature,
-                    "topP": cfg.top_p,
-                    "maxOutputTokens": cfg.max_output_tokens,
-                },
+                "tools": [{"google_search": {}}],
+                "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000},
             }
-            if cfg.web_search:
-                stream_payload["tools"] = [{"google_search": {}}]
-
-            url = (
-                f"{GEMINI_REST_URL_BASE}/{cfg.model}:streamGenerateContent"
-                f"?key={key}&alt=sse"
-            )
 
             full_resp = ""
             async with session.post(url, json=stream_payload) as resp:
