@@ -10,7 +10,9 @@ import base64
 import sys
 import hashlib
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 from quart import Quart, request, jsonify, send_file, websocket
 from werkzeug.datastructures import FileStorage
 
@@ -116,25 +118,12 @@ GEMINI_API_KEYS = [k.strip() for k in [
 print(f"✅ {len(GEMINI_API_KEYS)} Gemini key yüklendi.")
 
 # ── Opsiyonel API Key'leri ─────────────────────────────────
-# Bunlar olmadan da çalışır ama olursa daha iyi/hızlı veri gelir
-
-# CoinGecko Pro (ücretsiz tier key'siz çalışır, ama rate limit yüksek olsun istersen al)
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "").strip()
-
-# ExchangeRate-API Pro (ücretsiz tier key'siz çalışır, pro için key alabilirsin)
+COINGECKO_API_KEY    = os.getenv("COINGECKO_API_KEY", "").strip()
 EXCHANGERATE_API_KEY = os.getenv("EXCHANGERATE_API_KEY", "").strip()
-
-# OpenWeatherMap (Open-Meteo yerine kullanılabilir, ücretsiz 1000 istek/gün)
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "").strip()
-
-# NewsAPI (Türkçe haber için, ücretsiz 100 istek/gün)
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "").strip()
-
-# Alpha Vantage (hisse/borsa için yedek, ücretsiz 25 istek/gün)
-ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "").strip()
-
-# Sportradar veya API-Football (maç verileri için, ücretli)
-APIFOOTBALL_KEY = os.getenv("APIFOOTBALL_KEY", "").strip()
+OPENWEATHER_API_KEY  = os.getenv("OPENWEATHER_API_KEY", "").strip()
+NEWS_API_KEY         = os.getenv("NEWS_API_KEY", "").strip()
+ALPHA_VANTAGE_KEY    = os.getenv("ALPHA_VANTAGE_KEY", "").strip()
+APIFOOTBALL_KEY      = os.getenv("APIFOOTBALL_KEY", "").strip()
 
 print(f"🔑 Opsiyonel API'ler: "
       f"CoinGecko={'✅' if COINGECKO_API_KEY else '⬜ (key\'siz, ücretsiz)'} | "
@@ -149,7 +138,7 @@ CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+GEMINI_MODEL_NAME = "gemini-2.5-flash"          # Fallback model adı
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 async def get_next_gemini_key() -> str | None:
@@ -269,7 +258,6 @@ async def scrape_ddg_instant(query: str, sess: aiohttp.ClientSession) -> list[di
             pass
     return results
 
-
 # ── 2. DuckDuckGo HTML Scrape ──────────────────────────────
 async def scrape_ddg_html(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
@@ -283,7 +271,6 @@ async def scrape_ddg_html(query: str, sess: aiohttp.ClientSession) -> list[dict]
             if clean_s and len(clean_s) > 15:
                 results.append({"title": clean_html(t), "snippet": clean_s, "src": "ddg_html"})
     return results
-
 
 # ── 3. Bing Web Arama ─────────────────────────────────────
 async def scrape_bing(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -306,7 +293,6 @@ async def scrape_bing(query: str, sess: aiohttp.ClientSession) -> list[dict]:
                     })
     return results
 
-
 # ── 4. Google News RSS ────────────────────────────────────
 async def scrape_google_news_rss(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
@@ -325,7 +311,6 @@ async def scrape_google_news_rss(query: str, sess: aiohttp.ClientSession) -> lis
                     "src": "gnews_rss"
                 })
     return results
-
 
 # ── 5. ExchangeRate API (döviz kuru) ──────────────────────
 async def scrape_exchange_rate(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -361,7 +346,6 @@ async def scrape_exchange_rate(query: str, sess: aiohttp.ClientSession) -> list[
                 pass
         await asyncio.sleep(0.05)
     return results
-
 
 # ── 6. CoinGecko Kripto Fiyatları ─────────────────────────
 async def scrape_coingecko(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -411,7 +395,6 @@ async def scrape_coingecko(query: str, sess: aiohttp.ClientSession) -> list[dict
             pass
     return results
 
-
 # ── 7. Yahoo Finance (hisse, endeks, emtia) ───────────────
 async def scrape_yahoo_finance(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
@@ -452,7 +435,6 @@ async def scrape_yahoo_finance(query: str, sess: aiohttp.ClientSession) -> list[
                 pass
         await asyncio.sleep(0.05)
     return results
-
 
 # ── 8. Borsa İstanbul - Türk Hisseleri ────────────────────
 async def scrape_bist(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -501,7 +483,6 @@ async def scrape_bist(query: str, sess: aiohttp.ClientSession) -> list[dict]:
                 pass
         await asyncio.sleep(0.05)
     return results
-
 
 # ── 9. Hava Durumu - Open-Meteo (key'siz) ────────────────
 async def scrape_weather(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -592,7 +573,6 @@ def _wmo_code(code: int) -> str:
     }
     return m.get(code, "Değişken")
 
-
 # ── 10. Namaz / İftar Vakitleri - Aladhan (key'siz) ──────
 async def scrape_prayer_times(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
@@ -634,7 +614,6 @@ async def scrape_prayer_times(query: str, sess: aiohttp.ClientSession) -> list[d
             print(f"⚠️ Prayer times parse: {e}")
     return results
 
-
 # ── 11. Güncel Saat ───────────────────────────────────────
 async def get_clock() -> list[dict]:
     tr_tz = timezone(timedelta(hours=3))
@@ -649,7 +628,6 @@ async def get_clock() -> list[dict]:
         ),
         "src": "system_clock"
     }]
-
 
 # ── 12. Deprem Verileri - Kandilli ────────────────────────
 async def scrape_earthquake(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -673,7 +651,6 @@ async def scrape_earthquake(query: str, sess: aiohttp.ClientSession) -> list[dic
                     })
     return results[:4]
 
-
 # ── 13. Wikipedia Türkçe ──────────────────────────────────
 async def scrape_wikipedia(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
@@ -691,7 +668,6 @@ async def scrape_wikipedia(query: str, sess: aiohttp.ClientSession) -> list[dict
         except Exception:
             pass
     return results
-
 
 # ── 13b. NewsAPI (key varsa) ──────────────────────────────
 async def scrape_newsapi(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -719,7 +695,6 @@ async def scrape_newsapi(query: str, sess: aiohttp.ClientSession) -> list[dict]:
         except Exception as e:
             print(f"NewsAPI parse: {e}")
     return results
-
 
 # ── 13c. Alpha Vantage (döviz yedek, key varsa) ───────────
 async def scrape_alpha_vantage(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -752,7 +727,6 @@ async def scrape_alpha_vantage(query: str, sess: aiohttp.ClientSession) -> list[
         except Exception:
             pass
     return results
-
 
 # ── 13d. API-Football (maç verileri, key varsa) ──────────
 async def scrape_apifootball(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -796,7 +770,6 @@ async def scrape_apifootball(query: str, sess: aiohttp.ClientSession) -> list[di
         except Exception as e:
             print(f"API-Football parse: {e}")
     return results
-
 
 # ── 14. Türk Haber RSS (9 kaynak, paralel) ────────────────
 async def scrape_rss_news(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -844,7 +817,6 @@ async def scrape_rss_news(query: str, sess: aiohttp.ClientSession) -> list[dict]
             results.extend(r)
     return results[:10]
 
-
 # ── 15. Türk Haber Siteleri (HTML arama, paralel) ─────────
 async def scrape_turkish_news_sites(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     sources = [
@@ -877,7 +849,6 @@ async def scrape_turkish_news_sites(query: str, sess: aiohttp.ClientSession) -> 
         if isinstance(r, list):
             results.extend(r)
     return results[:8]
-
 
 # ── 16. Spor: Mackolik (canlı maç & puan durumu) ─────────
 async def scrape_mackolik(query: str, sess: aiohttp.ClientSession) -> list[dict]:
@@ -914,7 +885,6 @@ async def scrape_mackolik(query: str, sess: aiohttp.ClientSession) -> list[dict]
                     results.append({"snippet": " | ".join(cells[:7]), "src": "mackolik_table"})
     return results
 
-
 # ── 17. Spor: Flashscore (güncel skorlar) ────────────────
 async def scrape_flashscore(query: str, sess: aiohttp.ClientSession) -> list[dict]:
     results = []
@@ -946,12 +916,9 @@ async def scrape_flashscore(query: str, sess: aiohttp.ClientSession) -> list[dic
                     results.append({"snippet": f"{h} {s} {a}", "src": "flashscore"})
     return results[:6]
 
-
 # ============================================================
 # ANA ORKESTRATÖR
 # ============================================================
-
-# Kural tablosu: (regex, [scraper_adları])
 SCRAPER_RULES = [
     (r"(dolar|euro|sterlin|gbp|usd|eur|kur|döviz|frank|yen|riyal|ruble)",
      ["exchange", "alpha_vantage", "ddg_html"]),
@@ -1028,14 +995,11 @@ async def run_scrapers(query: str, names: list[str], sess: aiohttp.ClientSession
 
 
 async def fetch_live_data_full(query: str, sess: aiohttp.ClientSession) -> str:
-    # Cache kontrol
     cached = cache_get(query)
     if cached:
         return cached
 
     msg = query.lower()
-
-    # Hangi scraper'lar?
     selected = set(DEFAULT_SCRAPERS)
     for pattern, scrapers in SCRAPER_RULES:
         if re.search(pattern, msg):
@@ -1044,12 +1008,10 @@ async def fetch_live_data_full(query: str, sess: aiohttp.ClientSession) -> str:
     print(f"🔍 '{query}' → scraper'lar: {sorted(selected)}")
     results = await run_scrapers(query, list(selected), sess)
 
-    # Az sonuç → Bing fallback
     if len(results) < 2:
         print(f"⚠️ Az sonuç ({len(results)}), Bing ekleniyor...")
         results.extend(await scrape_bing(query, sess))
 
-    # Tekrar temizle
     seen, unique = set(), []
     for r in results:
         k = r.get("snippet", "")[:70]
@@ -1118,7 +1080,7 @@ def _fallback_raw(items: list[dict]) -> str:
 
 
 # ============================================================
-# ARAMA GEREKLİ Mİ? (+ sorgu optimizasyonu)
+# ARAMA GEREKLİ Mİ?
 # ============================================================
 MUST_SEARCH = [
     r"(puan\s*durumu|puan\s*tablosu|lig\s*sıralaması|süper\s*lig)",
@@ -1153,20 +1115,15 @@ NO_SEARCH = [
 
 async def should_search(message: str, sess: aiohttp.ClientSession) -> tuple[bool, str]:
     msg = message.lower().strip()
-
     for pat in NO_SEARCH:
         if re.search(pat, msg):
             return False, ""
-
     for pat in MUST_SEARCH:
         if re.search(pat, msg):
             return True, _optimize_query(message, msg)
-
-    # Belirsiz kısa sorgular → AI karar
     if len(msg.split()) <= 10:
         decision = await _ai_decide(message, sess)
         return decision, message if decision else ""
-
     return False, ""
 
 
@@ -1220,68 +1177,240 @@ async def _ai_decide(message: str, sess: aiohttp.ClientSession) -> bool:
 
 
 # ============================================================
-# YAŞAM DÖNGÜSÜ
+# ═══════════════════════════════════════════════════════════
+#   SMART TOKEN BUDGET SİSTEMİ
+# ═══════════════════════════════════════════════════════════
 # ============================================================
-@app.before_serving
-async def startup():
-    print("🚀 Nova 5.0 başlatılıyor...")
-    print("🌐 17 scraper: DDG ×2, Bing, Google News RSS, ExchangeRate, CoinGecko,")
-    print("   Yahoo Finance, BIST, Open-Meteo, Aladhan, Kandilli, Wikipedia,")
-    print("   RSS ×9 kaynak, 5 Türk haber sitesi, Mackolik, Flashscore")
-    global session
-    connector = aiohttp.TCPConnector(ssl=False, limit=200, limit_per_host=15)
-    session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=45, connect=10),
-        connector=connector,
-        json_serialize=json.dumps
+
+# ── 1. KATEGORİ TANIMLARI ─────────────────────────────────
+
+@dataclass
+class TierConfig:
+    """Bir karmaşıklık katmanının tüm ayarları."""
+    model: str
+    max_output_tokens: int
+    history_turns: int
+    web_search: bool
+    web_context_chars: int
+    temperature: float
+    top_p: float
+
+
+TIERS: dict[str, TierConfig] = {
+    # Selamlama, kısa soru, tek kelime cevap
+    "simple": TierConfig(
+        model="gemini-2.0-flash",
+        max_output_tokens=400,
+        history_turns=2,
+        web_search=False,
+        web_context_chars=0,
+        temperature=0.5,
+        top_p=0.85,
+    ),
+    # Çok adımlı soru, açıklama isteği, küçük hesaplama
+    "medium": TierConfig(
+        model="gemini-2.0-flash",
+        max_output_tokens=900,
+        history_turns=4,
+        web_search=True,
+        web_context_chars=1200,
+        temperature=0.65,
+        top_p=0.90,
+    ),
+    # Derin analiz, kod üretimi, güncel haber, karşılaştırma
+    "complex": TierConfig(
+        model="gemini-2.5-flash",
+        max_output_tokens=1800,
+        history_turns=8,
+        web_search=True,
+        web_context_chars=2500,
+        temperature=0.7,
+        top_p=0.92,
+    ),
+}
+
+# ── 2. SORGU SINIFLANDIRICI ────────────────────────────────
+
+_SIMPLE_PATTERNS = re.compile(
+    r"^(merhaba|selam|hey|hi|hello|naber|nasılsın|teşekkür|tamam|evet|hayır|"
+    r"\d+\s*[\+\-\*\/]\s*\d+|ne zaman|saat kaç|bugün|yarın|özetle\b.{0,60})$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_COMPLEX_PATTERNS = re.compile(
+    r"(yaz\b.*kod|kod\b.*yaz|program|analiz|karşılaştır|detaylı|açıkla|neden|nasıl çalışır|"
+    r"makale|rapor|ödev|proje|hata ayıkla|debug|optimiz|tablo|liste\b.{10,}|"
+    r"write|code|analyze|compare|explain|essay|report|detailed|how does|why does|"
+    r"difference between|pros and cons|summarize .{30,})",
+    re.IGNORECASE | re.UNICODE,
+)
+
+def classify_query(message: str) -> str:
+    """Mesajı 'simple' / 'medium' / 'complex' olarak sınıflandır."""
+    msg = message.strip()
+    if len(msg) < 35 and _SIMPLE_PATTERNS.search(msg):
+        return "simple"
+    if len(msg) > 120 or _COMPLEX_PATTERNS.search(msg):
+        return "complex"
+    return "medium"
+
+# ── 3. RESPONSE CACHE (TTL = 5 dk) ───────────────────────
+
+@dataclass
+class _CacheEntry:
+    response: str
+    expires_at: float
+
+class ResponseCache:
+    """Aynı soruya aynı cevabı tekrar üretme."""
+    def __init__(self, ttl_seconds: int = 300, max_size: int = 256):
+        self._store: dict[str, _CacheEntry] = {}
+        self.ttl = ttl_seconds
+        self.max_size = max_size
+
+    def _key(self, message: str, tier: str) -> str:
+        raw = f"{tier}:{message.strip().lower()}"
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    def get(self, message: str, tier: str) -> Optional[str]:
+        k = self._key(message, tier)
+        entry = self._store.get(k)
+        if entry and time.time() < entry.expires_at:
+            return entry.response
+        if entry:
+            del self._store[k]
+        return None
+
+    def set(self, message: str, tier: str, response: str) -> None:
+        if len(self._store) >= self.max_size:
+            oldest = min(self._store, key=lambda k: self._store[k].expires_at)
+            del self._store[oldest]
+        k = self._key(message, tier)
+        self._store[k] = _CacheEntry(response, time.time() + self.ttl)
+
+    def invalidate_expired(self) -> None:
+        now = time.time()
+        self._store = {k: v for k, v in self._store.items() if v.expires_at > now}
+
+# Modül seviyesinde tek cache nesnesi
+_response_cache = ResponseCache(ttl_seconds=300, max_size=256)
+
+# ── 4. AKILLI GEÇMİŞ SIKIŞTIRICISI ───────────────────────
+
+def smart_trim_history(conversation: list[dict], tier: str) -> list[dict]:
+    """Konuşma geçmişini tier'a göre kademeli olarak sıkıştır."""
+    cfg = TIERS[tier]
+    max_turns = cfg.history_turns
+    max_msg_chars = 300 if tier == "simple" else (600 if tier == "medium" else 1200)
+
+    # Son N turu al (1 tur = user + model = 2 eleman)
+    keep = conversation[-(max_turns * 2):]
+
+    trimmed = []
+    for msg in keep:
+        text = msg.get("message", "")
+        if len(text) > max_msg_chars:
+            text = text[:max_msg_chars] + "…[kısaltıldı]"
+        trimmed.append({**msg, "message": text})
+
+    return trimmed
+
+# ── 5. WEB VERİSİ KESME ───────────────────────────────────
+
+def trim_web_context(raw: str, tier: str) -> str:
+    """Web araması özetini tier'a göre kırp, cümle ortasında kesme."""
+    cfg = TIERS[tier]
+    limit = cfg.web_context_chars
+    if not raw or limit == 0:
+        return ""
+    if len(raw) <= limit:
+        return raw
+    cut = raw[:limit]
+    last_period = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+    if last_period > limit // 2:
+        cut = cut[: last_period + 1]
+    return cut
+
+# ── 6. TAHMİNİ TOKEN LOGU ─────────────────────────────────
+
+def _log_estimated_tokens(payload: dict, tier: str) -> None:
+    """1 token ≈ 4 karakter tahminiyle input boyutunu logla."""
+    total_chars = 0
+    for turn in payload.get("contents", []):
+        for part in turn.get("parts", []):
+            total_chars += len(part.get("text", ""))
+    sys_chars = len(
+        payload.get("system_instruction", {}).get("parts", [{}])[0].get("text", "")
     )
-    await load_data_to_memory()
-    app.add_background_task(keep_alive)
-    app.add_background_task(background_save_worker)
+    total_chars += sys_chars
+    est_tokens = total_chars // 4
+    cfg = TIERS[tier]
+    print(
+        f"📊 Tahmini input: ~{est_tokens} tok | "
+        f"max output: {cfg.max_output_tokens} tok | "
+        f"toplam budget: ~{est_tokens + cfg.max_output_tokens} tok"
+    )
 
-@app.after_serving
-async def cleanup():
-    global session
-    await save_memory_to_disk(force=True)
-    if session:
-        await session.close()
+# ── 7. PAYLOAD OLUŞTURUCU ─────────────────────────────────
 
-# ============================================================
-# VERİ YÖNETİMİ
-# ============================================================
-async def load_data_to_memory():
-    files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE,
-                 "api_cache": CACHE_FILE, "tokens": TOKENS_FILE}
-    for key, fn in files_map.items():
-        if os.path.exists(fn):
-            async with aiofiles.open(fn, mode='r', encoding='utf-8') as f:
-                content = await f.read()
-                if content:
-                    try:
-                        GLOBAL_CACHE[key] = json.loads(content)
-                    except Exception:
-                        GLOBAL_CACHE[key] = [] if key == "tokens" else {}
-        else:
-            GLOBAL_CACHE[key] = [] if key == "tokens" else {}
+def build_payload(
+    message: str,
+    conversation: list[dict],
+    tier: str,
+    live_context: str,
+    system_prompt: str,
+    image_data: Optional[str] = None,
+    custom_prompt: str = "",
+) -> tuple[dict, str]:
+    """Tier'a göre optimize edilmiş Gemini payload üret."""
+    cfg = TIERS[tier]
 
-async def background_save_worker():
-    while True:
-        await asyncio.sleep(20)
-        await save_memory_to_disk()
+    # Geçmişi sıkıştır
+    trimmed_history = smart_trim_history(conversation, tier)
 
-async def save_memory_to_disk(force=False):
-    files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE,
-                 "api_cache": CACHE_FILE, "tokens": TOKENS_FILE}
-    for key, fn in files_map.items():
-        if DIRTY_FLAGS[key] or force:
-            try:
-                tmp = fn + ".tmp"
-                async with aiofiles.open(tmp, mode='w', encoding='utf-8') as f:
-                    await f.write(json.dumps(GLOBAL_CACHE[key], ensure_ascii=False, indent=2))
-                os.replace(tmp, fn)
-                DIRTY_FLAGS[key] = False
-            except Exception as e:
-                print(f"⚠️ Kayıt ({key}): {e}")
+    # Web bağlamını kırp
+    raw_web = live_context.replace("<WEB_DATA>", "").replace("</WEB_DATA>", "")
+    trimmed_web = trim_web_context(raw_web, tier)
+    web_block = f"\n\n<WEB_DATA>{trimmed_web}</WEB_DATA>" if trimmed_web else ""
+
+    # Konuşma geçmişini dönüştür
+    contents = []
+    for m in trimmed_history:
+        contents.append({
+            "role": "user" if m["sender"] == "user" else "model",
+            "parts": [{"text": m["message"]}],
+        })
+
+    # Kullanıcının bu mesajı
+    user_parts: list[dict] = [{"text": f"{message}{web_block}"}]
+    if image_data:
+        img = image_data
+        if "," in img:
+            _, img = img.split(",", 1)
+        user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img}})
+    contents.append({"role": "user", "parts": user_parts})
+
+    # Sistem prompt
+    sys_prompt = system_prompt
+    if custom_prompt:
+        sys_prompt += f"\n\n[EK TALİMAT]: {custom_prompt}"
+
+    payload: dict = {
+        "contents": contents,
+        "system_instruction": {"parts": [{"text": sys_prompt}]},
+        "generationConfig": {
+            "temperature": cfg.temperature,
+            "topP": cfg.top_p,
+            "maxOutputTokens": cfg.max_output_tokens,
+        },
+    }
+
+    # Web araması gereken tierlarda google_search ekle
+    if cfg.web_search:
+        payload["tools"] = [{"google_search": {}}]
+
+    return payload, cfg.model
+
 
 # ============================================================
 # SİSTEM PROMPTU
@@ -1332,121 +1461,138 @@ kullanıcıya kullanıcıdan daha çok önem ver
 """
 
 # ============================================================
-# ANA CEVAP MOTORU
+# ANA CEVAP MOTORU  (Smart Token Budget entegreli)
 # ============================================================
-async def gemma_cevap_async(message, conversation, sess,
-                             user_name=None, image_data=None, custom_prompt=""):
+async def gemma_cevap_async(
+    message: str,
+    conversation: list,
+    sess: aiohttp.ClientSession,
+    user_name: Optional[str] = None,
+    image_data: Optional[str] = None,
+    custom_prompt: str = "",
+):
     if not GEMINI_API_KEYS:
         return "⚠️ API anahtarı eksik."
 
+    # ── Adım 1: Sorguyu sınıflandır ──────────────────────────────
+    tier = classify_query(message)
+
+    # Görsel veya custom_prompt varsa en az medium'a yükselt
+    if image_data or custom_prompt:
+        if tier == "simple":
+            tier = "medium"
+
+    print(f"🎯 Tier: {tier} | Mesaj: {message[:60]}...")
+
+    # ── Adım 2: Response cache kontrolü (simple + medium, görselsiz) ──
+    if tier in ("simple", "medium") and not image_data:
+        cached = _response_cache.get(message, tier)
+        if cached:
+            print("⚡ Response cache hit!")
+            return cached
+
+    # ── Adım 3: Web araması (tier izin veriyorsa) ────────────────
     live_context = ""
-    needed, opt_query = await should_search(message, sess)
-    if needed:
-        q = opt_query or message
-        print(f"🌐 Arama: '{q}'")
-        summary = await fetch_live_data_full(q, sess)
-        if summary:
-            live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
-            print(f"✅ WEB_DATA ({len(summary)} chr): {summary[:100]}...")
-        else:
-            print("❌ WEB_DATA boş")
+    if TIERS[tier].web_search:
+        needed, opt_query = await should_search(message, sess)
+        if needed:
+            q = opt_query or message
+            print(f"🌐 Arama ({tier}): '{q}'")
+            summary = await fetch_live_data_full(q, sess)
+            if summary:
+                live_context = summary
+                print(f"✅ Web verisi: {len(summary)} chr → kesilecek: {TIERS[tier].web_context_chars}")
+            else:
+                print("❌ Web verisi boş")
+    else:
+        print(f"⏭️  Web araması atlandı (tier={tier})")
 
-    contents = []
-    for m in conversation[-8:]:
-        contents.append({
-            "role": "user" if m["sender"] == "user" else "model",
-            "parts": [{"text": m["message"]}]
-        })
-
-    user_parts = [{"text": f"{message}{live_context}"}]
-    if image_data:
-        if "," in image_data:
-            _, image_data = image_data.split(",", 1)
-        user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image_data}})
-    contents.append({"role": "user", "parts": user_parts})
-
+    # ── Adım 4: Payload oluştur (tier'a göre optimize) ───────────
     sys_prompt = get_system_prompt()
-    if custom_prompt:
-        sys_prompt += f"\n\n[EK TALİMAT]: {custom_prompt}"
+    payload, model_name = build_payload(
+        message=message,
+        conversation=conversation,
+        tier=tier,
+        live_context=live_context,
+        system_prompt=sys_prompt,
+        image_data=image_data,
+        custom_prompt=custom_prompt,
+    )
 
-    payload = {
-        "contents": contents,
-        "system_instruction": {"parts": [{"text": sys_prompt}]},
-        "tools": [{"google_search": {}}],
-        "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000},
-    }
+    # ── Adım 5: Token tahmini logla ───────────────────────────────
+    _log_estimated_tokens(payload, tier)
 
+    # ── Adım 6: API çağrısı (key rotation korundu) ───────────────
     tried = set()
-    max_attempts = len(GEMINI_API_KEYS) * 2  # ← Her key'e 2 şans (cooldown sonrası)
+    max_attempts = len(GEMINI_API_KEYS) * 2
 
     for attempt in range(max_attempts):
         key = await get_next_gemini_key()
 
-        # ── YENİ: tried set'ini cooldown süresi dolduysa temizle ──
         if not key:
             print("⚠️ Kullanılabilir key yok, 3s bekleniyor...")
             await asyncio.sleep(3)
-            tried.clear()  # cooldown dolmuş olabilir, temizle
+            tried.clear()
             continue
 
         if key in tried:
-            # Tüm key'ler denendi mi?
             if len(tried) >= len(GEMINI_API_KEYS):
-                print(f"⚠️ Tüm {len(GEMINI_API_KEYS)} key denendi, 5s bekleniyor...")
+                print(f"⚠️ Tüm keyler denendi, 5s bekleniyor...")
                 await asyncio.sleep(5)
-                tried.clear()  # ← Reset et, tekrar dene
+                tried.clear()
             else:
-                await asyncio.sleep(0.2)  # kısa bekleme, farklı key gelecek
+                await asyncio.sleep(0.2)
             continue
 
         tried.add(key)
         key_idx = GEMINI_API_KEYS.index(key)
-        print(f"🔑 Key #{key_idx} deneniyor (attempt {attempt+1}/{max_attempts})")
+        print(f"🔑 Key #{key_idx} | model={model_name} | tier={tier} (attempt {attempt+1}/{max_attempts})")
 
         try:
-            url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
+            url = f"{GEMINI_REST_URL_BASE}/{model_name}:generateContent?key={key}"
             async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
+
                 if resp.status == 200:
                     d = await resp.json()
                     parts = d["candidates"][0]["content"].get("parts", [])
-                    text_parts = [p["text"] for p in parts if "text" in p]
-                    result = " ".join(text_parts).strip()
+                    result = " ".join(p["text"] for p in parts if "text" in p).strip()
                     if result:
-                        print(f"✅ Key #{key_idx} başarılı")
+                        print(f"✅ Key #{key_idx} başarılı ({len(result)} chr)")
+                        # Başarılı cevabı response cache'e yaz
+                        if tier in ("simple", "medium") and not image_data:
+                            _response_cache.set(message, tier, result)
                         return result
 
                 elif resp.status == 429:
                     print(f"⏳ Key #{key_idx} rate-limited (429)")
                     await mark_key_rate_limited(key)
-                    # Bu key'i tried'dan çıkarma — zaten cooldown'da
                     continue
 
                 elif resp.status == 503:
-                    # Geçici yoğunluk — kısa bekle, aynı key tekrar denenebilir
                     print(f"⚠️ Key #{key_idx} 503 yoğunluk, 2s bekle...")
-                    tried.discard(key)  # ← tried'dan çıkar, tekrar denenebilsin
+                    tried.discard(key)
                     await asyncio.sleep(2)
                     continue
 
                 elif resp.status == 400:
                     # google_search desteklenmiyorsa tool'suz dene
                     payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
-                    async with sess.post(url, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as resp2:
-                        if resp2.status == 200:
-                            d = await resp2.json()
-                            parts = d["candidates"][0]["content"].get("parts", [])
-                            text_parts = [p["text"] for p in parts if "text" in p]
-                            return " ".join(text_parts).strip()
-
-                elif resp.status == 404:
-                    fb = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
-                    payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
-                    async with sess.post(fb, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as r2:
+                    async with sess.post(url, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as r2:
                         if r2.status == 200:
                             d = await r2.json()
                             parts = d["candidates"][0]["content"].get("parts", [])
-                            text_parts = [p["text"] for p in parts if "text" in p]
-                            return " ".join(text_parts).strip()
+                            return " ".join(p["text"] for p in parts if "text" in p).strip()
+
+                elif resp.status == 404:
+                    # Model bulunamazsa flash fallback
+                    fallback_model = "gemini-1.5-flash"
+                    fb_url = f"{GEMINI_REST_URL_BASE}/{fallback_model}:generateContent?key={key}"
+                    payload_no_tool = {k: v for k, v in payload.items() if k != "tools"}
+                    async with sess.post(fb_url, json=payload_no_tool, timeout=aiohttp.ClientTimeout(total=40)) as r2:
+                        if r2.status == 200:
+                            d = await r2.json()
+                            parts = d["candidates"][0]["content"].get("parts", [])
+                            return " ".join(p["text"] for p in parts if "text" in p).strip()
 
                 else:
                     body = await resp.text()
@@ -1462,11 +1608,88 @@ async def gemma_cevap_async(message, conversation, sess,
     return "⚠️ Şu an yoğunluk var, tekrar dener misin?"
 
 # ============================================================
+# YAŞAM DÖNGÜSÜ
+# ============================================================
+@app.before_serving
+async def startup():
+    print("🚀 Nova 5.0 başlatılıyor...")
+    print("🌐 17 scraper: DDG ×2, Bing, Google News RSS, ExchangeRate, CoinGecko,")
+    print("   Yahoo Finance, BIST, Open-Meteo, Aladhan, Kandilli, Wikipedia,")
+    print("   RSS ×9 kaynak, 5 Türk haber sitesi, Mackolik, Flashscore")
+    print("🧠 Smart Token Budget: simple/medium/complex tier sistemi aktif")
+    global session
+    connector = aiohttp.TCPConnector(ssl=False, limit=200, limit_per_host=15)
+    session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=45, connect=10),
+        connector=connector,
+        json_serialize=json.dumps
+    )
+    await load_data_to_memory()
+    app.add_background_task(keep_alive)
+    app.add_background_task(background_save_worker)
+    app.add_background_task(cache_cleanup_worker)  # ← Yeni: cache temizleme
+
+@app.after_serving
+async def cleanup():
+    global session
+    await save_memory_to_disk(force=True)
+    if session:
+        await session.close()
+
+# ============================================================
+# VERİ YÖNETİMİ
+# ============================================================
+async def load_data_to_memory():
+    files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE,
+                 "api_cache": CACHE_FILE, "tokens": TOKENS_FILE}
+    for key, fn in files_map.items():
+        if os.path.exists(fn):
+            async with aiofiles.open(fn, mode='r', encoding='utf-8') as f:
+                content = await f.read()
+                if content:
+                    try:
+                        GLOBAL_CACHE[key] = json.loads(content)
+                    except Exception:
+                        GLOBAL_CACHE[key] = [] if key == "tokens" else {}
+        else:
+            GLOBAL_CACHE[key] = [] if key == "tokens" else {}
+
+async def background_save_worker():
+    while True:
+        await asyncio.sleep(20)
+        await save_memory_to_disk()
+
+async def cache_cleanup_worker():
+    """Her 10 dakikada bir süresi dolmuş response cache girişlerini temizle."""
+    while True:
+        await asyncio.sleep(600)
+        _response_cache.invalidate_expired()
+        print(f"🧹 Response cache temizlendi. Kalan: {len(_response_cache._store)} giriş")
+
+async def save_memory_to_disk(force=False):
+    files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE,
+                 "api_cache": CACHE_FILE, "tokens": TOKENS_FILE}
+    for key, fn in files_map.items():
+        if DIRTY_FLAGS[key] or force:
+            try:
+                tmp = fn + ".tmp"
+                async with aiofiles.open(tmp, mode='w', encoding='utf-8') as f:
+                    await f.write(json.dumps(GLOBAL_CACHE[key], ensure_ascii=False, indent=2))
+                os.replace(tmp, fn)
+                DIRTY_FLAGS[key] = False
+            except Exception as e:
+                print(f"⚠️ Kayıt ({key}): {e}")
+
+# ============================================================
 # ROUTE'LAR
 # ============================================================
 @app.route("/")
 async def home():
-    return f"Nova 5.0 — {get_nova_date()} | 17 kaynak aktif ✅"
+    return (
+        f"Nova 5.0 — {get_nova_date()} | 17 kaynak aktif ✅ | "
+        f"Smart Token Budget aktif 🧠 | "
+        f"Response cache: {len(_response_cache._store)} giriş"
+    )
 
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 async def chat():
@@ -1522,12 +1745,40 @@ async def get_history():
     user_id = request.args.get("userId", "anon")
     return jsonify(GLOBAL_CACHE["history"].get(user_id, {})), 200
 
-# Debug endpoint — scraper test
+# Debug endpoint — scraper + tier test
 @app.route("/api/debug/search")
 async def debug_search():
     q = request.args.get("q", "dolar kaç")
     result = await fetch_live_data_full(q, session)
-    return jsonify({"query": q, "result": result, "cache_size": len(_SEARCH_CACHE)})
+    tier = classify_query(q)
+    return jsonify({
+        "query": q,
+        "tier": tier,
+        "model": TIERS[tier].model,
+        "max_output_tokens": TIERS[tier].max_output_tokens,
+        "result": result,
+        "search_cache_size": len(_SEARCH_CACHE),
+        "response_cache_size": len(_response_cache._store),
+    })
+
+@app.route("/api/debug/tiers")
+async def debug_tiers():
+    """Tier konfigürasyonlarını ve anlık cache durumunu göster."""
+    return jsonify({
+        "tiers": {
+            name: {
+                "model": cfg.model,
+                "max_output_tokens": cfg.max_output_tokens,
+                "history_turns": cfg.history_turns,
+                "web_search": cfg.web_search,
+                "web_context_chars": cfg.web_context_chars,
+                "temperature": cfg.temperature,
+            }
+            for name, cfg in TIERS.items()
+        },
+        "response_cache_entries": len(_response_cache._store),
+        "search_cache_entries": len(_SEARCH_CACHE),
+    })
 
 # ============================================================
 # WEBSOCKET
@@ -1537,37 +1788,66 @@ async def ws_chat_handler():
     await websocket.accept()
     while True:
         try:
-            raw     = await websocket.receive()
-            msg     = json.loads(raw)
-            user_id = msg.get("userId", "anon")
-            chat_id = msg.get("chatId", "live")
+            raw      = await websocket.receive()
+            msg      = json.loads(raw)
+            user_id  = msg.get("userId", "anon")
+            chat_id  = msg.get("chatId", "live")
             user_msg = msg.get("message", "")
 
             history = GLOBAL_CACHE["history"].setdefault(user_id, {}).setdefault(chat_id, [])
 
-            live_context = ""
-            needed, q = await should_search(user_msg, session)
-            if needed:
-                summary = await fetch_live_data_full(q or user_msg, session)
-                if summary:
-                    live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
+            # Tier belirle
+            tier = classify_query(user_msg)
+            print(f"🎯 WS Tier: {tier} | Mesaj: {user_msg[:50]}...")
 
+            live_context = ""
+            if TIERS[tier].web_search:
+                needed, q = await should_search(user_msg, session)
+                if needed:
+                    summary = await fetch_live_data_full(q or user_msg, session)
+                    if summary:
+                        live_context = summary
+
+            # Tier'a göre geçmişi ve web verisini kırp
+            trimmed_history = smart_trim_history(history, tier)
+            trimmed_web = trim_web_context(live_context, tier)
+            web_block = f"\n\n<WEB_DATA>{trimmed_web}</WEB_DATA>" if trimmed_web else ""
+
+            cfg = TIERS[tier]
             key = await get_next_gemini_key()
             if not key:
                 await websocket.send("⚠️ API anahtarı bulunamadı.")
                 await websocket.send("[END]")
                 return
 
-            url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
-            payload = {
-                "contents": [{"role": "user", "parts": [{"text": f"{user_msg}{live_context}"}]}],
+            # Streaming payload
+            contents = []
+            for m in trimmed_history:
+                contents.append({
+                    "role": "user" if m["sender"] == "user" else "model",
+                    "parts": [{"text": m["message"]}],
+                })
+            contents.append({"role": "user", "parts": [{"text": f"{user_msg}{web_block}"}]})
+
+            stream_payload = {
+                "contents": contents,
                 "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-                "tools": [{"google_search": {}}],
-                "generationConfig": {"temperature": 0.7},
+                "generationConfig": {
+                    "temperature": cfg.temperature,
+                    "topP": cfg.top_p,
+                    "maxOutputTokens": cfg.max_output_tokens,
+                },
             }
+            if cfg.web_search:
+                stream_payload["tools"] = [{"google_search": {}}]
+
+            url = (
+                f"{GEMINI_REST_URL_BASE}/{cfg.model}:streamGenerateContent"
+                f"?key={key}&alt=sse"
+            )
 
             full_resp = ""
-            async with session.post(url, json=payload) as resp:
+            async with session.post(url, json=stream_payload) as resp:
                 async for line in resp.content:
                     line = line.decode("utf-8").strip()
                     if line.startswith("data:"):
