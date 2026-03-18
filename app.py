@@ -149,33 +149,33 @@ APIFOOTBALL_KEY      = os.getenv("APIFOOTBALL_KEY", "").strip()
 
 CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
+# Basit cooldown: key index → bekleme bitiş zamanı
 KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
-async def get_next_gemini_key() -> str | None:
+async def get_next_gemini_key(skip_indices: set | None = None) -> tuple[str, int] | tuple[None, int]:
+    """Sıradaki kullanılabilir key'i döndürür. (key, index) tuple'ı döner."""
     global CURRENT_KEY_INDEX
     async with KEY_LOCK:
         if not GEMINI_API_KEYS:
-            return None
+            return None, -1
         now = asyncio.get_event_loop().time()
         for _ in range(len(GEMINI_API_KEYS)):
             idx = CURRENT_KEY_INDEX
             CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
+            if skip_indices and idx in skip_indices:
+                continue
             if now >= KEY_COOLDOWNS.get(idx, 0):
-                return GEMINI_API_KEYS[idx]
-        best = min(KEY_COOLDOWNS, key=lambda i: KEY_COOLDOWNS.get(i, 0))
-        return GEMINI_API_KEYS[best]
+                return GEMINI_API_KEYS[idx], idx
+        # Hepsi cooldown'da → en yakın biten key'i ver
+        best = min(range(len(GEMINI_API_KEYS)), key=lambda i: KEY_COOLDOWNS.get(i, 0))
+        return GEMINI_API_KEYS[best], best
 
-async def mark_key_rate_limited(key: str):
-    async with KEY_LOCK:
-        try:
-            idx = GEMINI_API_KEYS.index(key)
-            KEY_COOLDOWNS[idx] = asyncio.get_event_loop().time() + KEY_COOLDOWN_SECS
-            print(f"⏳ Key #{idx} rate-limited, {KEY_COOLDOWN_SECS}s bekleniyor.")
-        except ValueError:
-            pass
+def mark_key_rate_limited_sync(idx: int):
+    KEY_COOLDOWNS[idx] = asyncio.get_event_loop().time() + KEY_COOLDOWN_SECS
+    print(f"⏳ Key #{idx} rate-limited, {KEY_COOLDOWN_SECS}s bekleniyor.")
 
 # ============================================================
 # HTTP YARDIMCILARI
@@ -883,36 +883,7 @@ async def fetch_live_data_full(query: str, sess: aiohttp.ClientSession) -> str:
 
 
 async def summarize_with_ai(question: str, items: list[dict], sess: aiohttp.ClientSession) -> str:
-    snippets = "\n".join(
-        f"[{r.get('src','?')}] {r.get('title','')+': ' if r.get('title') else ''}{r.get('snippet','')}"
-        for r in items[:8]
-    )
-    prompt = (
-        f"Kullanıcı sorusu: '{question}'\n\nToplanan güncel veriler:\n{snippets}\n\n"
-        "GÖREV: Soruya EN DOĞRUDAN ve EN GÜNCEL cevabı ver.\n"
-        "- 'bulunamadı', 'bilmiyorum' YAZMA\n"
-        "- Sayı/tarih/skor/fiyat varsa OLDUĞU GİBİ yaz\n"
-        "- Maksimum 3 cümle, Türkçe yaz"
-    )
-    key = await get_next_gemini_key()
-    if not key:
-        return _fallback_raw(items)
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.05, "maxOutputTokens": 300},
-    }
-    try:
-        url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
-        async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            if resp.status == 200:
-                d = await resp.json()
-                text = d["candidates"][0]["content"]["parts"][0]["text"].strip()
-                if text:
-                    return text
-            elif resp.status == 429:
-                await mark_key_rate_limited(key)
-    except Exception as e:
-        print(f"⚠️ AI özet hatası: {e}")
+    """Ekstra API çağrısı yapmadan ham veriyi döndürür."""
     return _fallback_raw(items)
 
 
@@ -990,27 +961,7 @@ def _optimize_query(original: str, msg: str) -> str:
 
 
 async def _ai_decide(message: str, sess: aiohttp.ClientSession) -> bool:
-    key = await get_next_gemini_key()
-    if not key:
-        return False
-    prompt = (
-        f"Soru: '{message}'\n"
-        "İnternet araması gerekli mi? Sadece EVET veya HAYIR.\n"
-        "EVET: Anlık değişen veri (kur, skor, hava, fiyat, son haber, saat, güncel durum)\n"
-        "HAYIR: Sabit bilgi (tarih, tanım, nasıl yapılır, matematik, kod, fikir)"
-    )
-    try:
-        url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
-        async with sess.post(url, json={
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 5},
-        }, timeout=aiohttp.ClientTimeout(total=7)) as r:
-            if r.status == 200:
-                d = await r.json()
-                ans = d["candidates"][0]["content"]["parts"][0]["text"].strip().upper()
-                return "EVET" in ans
-    except Exception:
-        pass
+    """Ekstra API çağrısı yapmadan varsayılan olarak arama yapmaz."""
     return False
 
 # ============================================================
@@ -1131,31 +1082,16 @@ async def gemma_cevap_async(
         "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000},
     }
 
-    # ── 4. API çağrısı ────────────────────────────────────────────
-    tried = set()
-    max_attempts = len(GEMINI_API_KEYS) * 2
+    # ── 4. API çağrısı — sade key rotasyonu ──────────────────────
+    skipped: set[int] = set()
 
-    for attempt in range(max_attempts):
-        key = await get_next_gemini_key()
+    for attempt in range(len(GEMINI_API_KEYS) + 1):
+        key, key_idx = await get_next_gemini_key(skip_indices=skipped)
 
-        if not key:
-            print("⚠️ Kullanılabilir key yok, 3s bekleniyor...")
-            await asyncio.sleep(3)
-            tried.clear()
-            continue
+        if key is None:
+            break
 
-        if key in tried:
-            if len(tried) >= len(GEMINI_API_KEYS):
-                print(f"⚠️ Tüm keyler denendi, 5s bekleniyor...")
-                await asyncio.sleep(5)
-                tried.clear()
-            else:
-                await asyncio.sleep(0.2)
-            continue
-
-        tried.add(key)
-        key_idx = GEMINI_API_KEYS.index(key)
-        print(f"🔑 Key #{key_idx} (attempt {attempt+1}/{max_attempts})")
+        print(f"🔑 Key #{key_idx} (attempt {attempt+1})")
 
         try:
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
@@ -1172,17 +1108,19 @@ async def gemma_cevap_async(
                         return result
 
                 elif resp.status == 429:
-                    print(f"⏳ Key #{key_idx} rate-limited")
-                    await mark_key_rate_limited(key)
+                    print(f"⏳ Key #{key_idx} rate-limited, sıradakine geç")
+                    mark_key_rate_limited_sync(key_idx)
+                    skipped.add(key_idx)
                     continue
 
                 elif resp.status == 503:
                     print(f"⚠️ Key #{key_idx} 503, 2s bekle...")
-                    tried.discard(key)
                     await asyncio.sleep(2)
+                    skipped.add(key_idx)
                     continue
 
                 elif resp.status == 400:
+                    # tools olmadan tekrar dene
                     payload_nt = {k: v for k, v in payload.items() if k != "tools"}
                     async with sess.post(url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=40)) as r2:
                         if r2.status == 200:
@@ -1202,12 +1140,15 @@ async def gemma_cevap_async(
                 else:
                     body = await resp.text()
                     print(f"⚠️ Key #{key_idx} HTTP {resp.status}: {body[:150]}")
+                    skipped.add(key_idx)
 
         except asyncio.TimeoutError:
             print(f"⏱️ Key #{key_idx} timeout")
+            skipped.add(key_idx)
             continue
         except Exception as e:
             print(f"⚠️ Key #{key_idx} hata: {e}")
+            skipped.add(key_idx)
             continue
 
     return "⚠️ Şu an yoğunluk var, tekrar dener misin?"
@@ -1372,7 +1313,7 @@ async def ws_chat_handler():
                 })
             contents.append({"role": "user", "parts": [{"text": f"{user_msg}{live_context}"}]})
 
-            key = await get_next_gemini_key()
+            key, _ki = await get_next_gemini_key()
             if not key:
                 await websocket.send("⚠️ API anahtarı bulunamadı.")
                 await websocket.send("[END]")
