@@ -1041,18 +1041,33 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
         print(f"[KEY] Key #{key_idx} kullaniliyor (Deneme {attempt+1}/{len(GEMINI_API_KEYS)+1})", flush=True)
         try:
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
+            # 1. DENEME: Google Search ile
             async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
                 if resp.status == 200:
                     d = await resp.json()
                     parts = d["candidates"][0]["content"].get("parts", [])
                     result = " ".join(p["text"] for p in parts if "text" in p).strip()
                     if result:
-                        print(f"[OK] Key #{key_idx} basarili ({len(result)} chr)")
+                        print(f"[OK] Key #{key_idx} basarili (Search OK)", flush=True)
                         if _is_cacheable(message) and not image_data and not custom_prompt:
                             resp_cache_set(message, result)
                         return result
-                elif resp.status == 429:
-                    print(f"[WAIT] Key #{key_idx} rate-limited")
+                
+                # 2. DENEME: Hata varsa Search'u kapatıp tekrar dene (Eski 2.5 fallback mantığı)
+                print(f"[!] Key #{key_idx} Search ile hata aldi (HTTP {resp.status}), Search'suz deneniyor...", flush=True)
+                payload_no_tools = {k: v for k, v in payload.items() if k != "tools"}
+                async with sess.post(url, json=payload_no_tools, timeout=aiohttp.ClientTimeout(total=40)) as r2:
+                    if r2.status == 200:
+                        d2 = await r2.json()
+                        parts2 = d2["candidates"][0]["content"].get("parts", [])
+                        result2 = " ".join(p["text"] for p in parts2 if "text" in p).strip()
+                        if result2:
+                            print(f"[OK] Key #{key_idx} basarili (Search OLMADAN)", flush=True)
+                            return result2
+                    else:
+                        print(f"[!] Key #{key_idx} Search'suz de basarisiz (HTTP {r2.status})", flush=True)
+
+                if resp.status == 429:
                     mark_key_rate_limited_sync(key_idx)
                     skipped.add(key_idx)
                     continue
