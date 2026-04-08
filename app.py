@@ -36,7 +36,7 @@ from quart_cors import cors
 # ============================================================
 FIREBASE_AVAILABLE = False
 app = Quart(__name__)
-app = cors(app, allow_origin="*", allow_headers=["Content-Type", "Authorization", "Accept"], allow_methods=["GET", "POST", "OPTIONS"])
+app = cors(app, allow_origin="*", allow_headers="*", allow_methods="*")
 
 # Redundant manual CORS headers removed. Managed by quart-cors.
 
