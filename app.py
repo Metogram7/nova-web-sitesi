@@ -137,7 +137,7 @@ CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
-GEMINI_MODEL_NAME = "gemini-1.5-flash"
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 async def get_next_gemini_key(skip_indices: set | None = None) -> tuple[str, int] | tuple[None, int]:
@@ -1025,8 +1025,8 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
 
                 elif resp.status == 404:
                     print(f"[!] Key #{key_idx} 404: Model bulunamadi, fallback deneniyor...")
-                    # 404 durumunda alternatif model ismiyle son bir kez dene
-                    alt_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash-latest:generateContent?key={key}"
+                    # 404 durumunda ana modelle son bir kez dene (endpoint farklılığı ihtimaline karşı)
+                    alt_url = f"{GEMINI_REST_URL_BASE}/gemini-2.0-flash:generateContent?key={key}"
                     async with sess.post(alt_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as r_alt:
                         if r_alt.status == 200:
                             d_alt = await r_alt.json()
