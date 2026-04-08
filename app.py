@@ -1035,8 +1035,10 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
     for attempt in range(len(GEMINI_API_KEYS) + 1):
         key, key_idx = await get_next_gemini_key(skip_indices=skipped)
         if key is None:
+            print("[!] API anahtari temin edilemedi!", flush=True)
             break
-        print(f"[KEY] Key #{key_idx} (attempt {attempt+1})")
+        
+        print(f"[KEY] Key #{key_idx} kullaniliyor (Deneme {attempt+1}/{len(GEMINI_API_KEYS)+1})", flush=True)
         try:
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
             async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
@@ -1087,6 +1089,7 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
             skipped.add(key_idx)
             continue
 
+    print(f"[LOOP END] No success across all keys. Returning congestion msg.", flush=True)
     return "[!] Su an yogunluk var, tekrar dener misin?"
 
 # ============================================================
@@ -1224,9 +1227,12 @@ async def chat():
         custom    = data.get("systemInstruction") or data.get("systemPrompt", "")
 
         history  = GLOBAL_CACHE["history"].setdefault(user_id, {}).setdefault(chat_id, [])
+        print(f"[REQUEST] User: {user_id}, Chat: {chat_id}, Msg: {user_msg[:50]}...", flush=True)
+        
         response = await gemma_cevap_async(user_msg, history, session, user_id, image_b64, custom)
 
-        if not response or response.startswith("⚠️"):
+        if not response or response.startswith("[!]"):
+            print(f"[ERROR] Chat failed: {response}", flush=True)
             return jsonify({"response": response or "Bir hata olustu.", "status": "error"}), 200
 
         history.append({"sender": "user", "message": user_msg})
