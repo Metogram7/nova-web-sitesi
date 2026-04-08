@@ -1005,39 +1005,59 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
         try:
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
             async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
-                data = await resp.json()
+                body_text = await resp.text()
+                try:
+                    data = json.loads(body_text)
+                except:
+                    data = {}
+
                 if resp.status == 200:
                     candidates = data.get("candidates", [])
                     if candidates and "content" in candidates[0]:
                         parts = candidates[0]["content"].get("parts", [])
                         result = " ".join(p["text"] for p in parts if "text" in p).strip()
                         if result:
-                            print(f"[OK] Key #{key_idx} basarili ({len(result)} chr)")
+                            print(f"[OK] Key #{key_idx} basarili")
                             if _is_cacheable(message) and not image_data and not custom_prompt:
                                 resp_cache_set(message, result)
                             return result
-                    
-                    # Eğer text yoksa ama tool_call varsa (Google Search kullanmak istiyorsa)
-                    # Mevcut yapıda direkt text bekliyoruz, boş dönerse pass
-                    print(f"[!] Key #{key_idx} sonuc dondurmedi (safety veya tool_use)")
-                
-                elif resp.status == 429:
-                    print(f"[WAIT] Key #{key_idx} rate-limited")
-                    mark_key_rate_limited_sync(key_idx)
+                    print(f"[!] Key #{key_idx} bos yanıt dondurdu (Safety filter?)")
+
+                elif resp.status == 404:
+                    print(f"[!] Key #{key_idx} 404: Model bulunamadi, fallback deneniyor...")
+                    # 404 durumunda alternatif model ismiyle son bir kez dene
+                    alt_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash-latest:generateContent?key={key}"
+                    async with sess.post(alt_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as r_alt:
+                        if r_alt.status == 200:
+                            d_alt = await r_alt.json()
+                            parts = d_alt["candidates"][0]["content"].get("parts", [])
+                            return " ".join(p["text"] for p in parts if "text" in p).strip()
+
                 elif resp.status == 400:
-                    # Tool hatası mı kontrol et (Search kısıtlı olabilir)
-                    print(f"[!] Key #{key_idx} 400 hatası, toolsız deneniyor...")
+                    print(f"[!] Key #{key_idx} 400: Parametre hatasi, sadeleştiriliyor...")
+                    # 1. Aşama: Tools çıkarılmış halini dene
                     payload_nt = {k: v for k, v in payload.items() if k != "tools"}
                     async with sess.post(url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=30)) as r2:
                         if r2.status == 200:
                             d2 = await r2.json()
-                            c2 = d2.get("candidates", [])
-                            if c2 and "content" in c2[0]:
-                                p2 = c2[0]["content"].get("parts", [])
-                                res2 = " ".join(p["text"] for p in p2 if "text" in p).strip()
-                                return res2
+                            return " ".join(p["text"] for p in d2["candidates"][0]["content"]["parts"] if "text" in p).strip()
+                        
+                        # 2. Aşama: Hala 400 ise System Instruction alanını mesajın içine göm (Legacy Mode)
+                        p_legacy = payload_nt.copy()
+                        if "system_instruction" in p_legacy:
+                            del p_legacy["system_instruction"]
+                            legacy_msg = f"{sys_prompt}\n\nYukarıdaki talimatlara göre cevapla:\n{message}"
+                            # Mesajlar listesinde son mesajı güncelle
+                            if p_legacy["contents"] and p_legacy["contents"][-1]["role"] == "user":
+                                p_legacy["contents"][-1]["parts"][0]["text"] = f"{legacy_msg}{live_context}"
+                            
+                            async with sess.post(url, json=p_legacy, timeout=aiohttp.ClientTimeout(total=30)) as r3:
+                                if r3.status == 200:
+                                    d3 = await r3.json()
+                                    return " ".join(p["text"] for p in d3["candidates"][0]["content"]["parts"] if "text" in p).strip()
+
                 else:
-                    print(f"[!] Key #{key_idx} HTTP {resp.status}")
+                    print(f"[!] Key #{key_idx} HTTP {resp.status}: {body_text[:100]}")
                 
                 skipped.add(key_idx)
         except Exception as e:
