@@ -29,52 +29,17 @@ try:
 except ImportError:
     GENAI_AVAILABLE = False
 
+from quart_cors import cors
+
 # ============================================================
 # UYGULAMA & CORS
 # ============================================================
-# ============================================================
-# UYGULAMA & CORS & FIREBASE
-# ============================================================
-app = Quart(__name__)
-
 FIREBASE_AVAILABLE = False
-try:
-    # Oncelikli servis hesabi dosyalarini tara
-    for fb_file in ["firebase-admin.json", "serviceAccountKey.json", "service_account.json"]:
-        fb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), fb_file)
-        if os.path.exists(fb_path):
-            cred = credentials.Certificate(fb_path)
-            firebase_admin.initialize_app(cred)
-            FIREBASE_AVAILABLE = True
-            print(f"[OK] Firebase '{fb_file}' ile baslatildi.")
-            break
-except Exception as e:
-    print(f"[!] Firebase baslatilamadi: {e}")
+app = Quart(__name__)
+app = cors(app, allow_origin="*", allow_headers=["Content-Type", "Authorization", "Accept"], allow_methods=["GET", "POST", "OPTIONS"])
 
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
-    "Access-Control-Max-Age": "86400",
-}
+# Redundant manual CORS headers removed. Managed by quart-cors.
 
-@app.after_request
-async def add_cors_headers(response):
-    for key, value in CORS_HEADERS.items():
-        response.headers[key] = value
-    return response
-
-@app.route("/api/chat", methods=["OPTIONS"])
-@app.route("/api/history", methods=["OPTIONS"])
-@app.route("/api/delete_chat", methods=["OPTIONS"])
-@app.route("/api/user_status", methods=["OPTIONS"])
-@app.route("/api/min_version", methods=["OPTIONS"])
-@app.route("/api/share_chat", methods=["OPTIONS"])
-async def handle_options(**kwargs):
-    resp = Response("", status=204)
-    for key, value in CORS_HEADERS.items():
-        resp.headers[key] = value
-    return resp
 
 session: aiohttp.ClientSession | None = None
 
@@ -1035,76 +1000,52 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
     for attempt in range(len(GEMINI_API_KEYS) + 1):
         key, key_idx = await get_next_gemini_key(skip_indices=skipped)
         if key is None:
-            print("[!] API anahtari temin edilemedi!", flush=True)
             break
-        
-        print(f"[KEY] Key #{key_idx} kullaniliyor (Deneme {attempt+1}/{len(GEMINI_API_KEYS)+1})", flush=True)
+        print(f"[KEY] Key #{key_idx} (attempt {attempt+1})")
         try:
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
-            # 1. DENEME: Google Search ile
             async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
+                data = await resp.json()
                 if resp.status == 200:
-                    d = await resp.json()
-                    parts = d["candidates"][0]["content"].get("parts", [])
-                    result = " ".join(p["text"] for p in parts if "text" in p).strip()
-                    if result:
-                        print(f"[OK] Key #{key_idx} basarili (Search OK)", flush=True)
-                        if _is_cacheable(message) and not image_data and not custom_prompt:
-                            resp_cache_set(message, result)
-                        return result
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        result = " ".join(p["text"] for p in parts if "text" in p).strip()
+                        if result:
+                            print(f"[OK] Key #{key_idx} basarili ({len(result)} chr)")
+                            if _is_cacheable(message) and not image_data and not custom_prompt:
+                                resp_cache_set(message, result)
+                            return result
+                    
+                    # Eğer text yoksa ama tool_call varsa (Google Search kullanmak istiyorsa)
+                    # Mevcut yapıda direkt text bekliyoruz, boş dönerse pass
+                    print(f"[!] Key #{key_idx} sonuc dondurmedi (safety veya tool_use)")
                 
-                # 2. DENEME: Hata varsa Search'u kapatıp tekrar dene (Eski 2.5 fallback mantığı)
-                print(f"[!] Key #{key_idx} Search ile hata aldi (HTTP {resp.status}), Search'suz deneniyor...", flush=True)
-                payload_no_tools = {k: v for k, v in payload.items() if k != "tools"}
-                async with sess.post(url, json=payload_no_tools, timeout=aiohttp.ClientTimeout(total=40)) as r2:
-                    if r2.status == 200:
-                        d2 = await r2.json()
-                        parts2 = d2["candidates"][0]["content"].get("parts", [])
-                        result2 = " ".join(p["text"] for p in parts2 if "text" in p).strip()
-                        if result2:
-                            print(f"[OK] Key #{key_idx} basarili (Search OLMADAN)", flush=True)
-                            return result2
-                    else:
-                        print(f"[!] Key #{key_idx} Search'suz de basarisiz (HTTP {r2.status})", flush=True)
-
-                if resp.status == 429:
+                elif resp.status == 429:
+                    print(f"[WAIT] Key #{key_idx} rate-limited")
                     mark_key_rate_limited_sync(key_idx)
-                    skipped.add(key_idx)
-                    continue
-                elif resp.status == 503:
-                    print(f"[!] Key #{key_idx} 503, 2s bekle...")
-                    await asyncio.sleep(2)
-                    skipped.add(key_idx)
-                    continue
                 elif resp.status == 400:
+                    # Tool hatası mı kontrol et (Search kısıtlı olabilir)
+                    print(f"[!] Key #{key_idx} 400 hatası, toolsız deneniyor...")
                     payload_nt = {k: v for k, v in payload.items() if k != "tools"}
-                    async with sess.post(url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=40)) as r2:
+                    async with sess.post(url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=30)) as r2:
                         if r2.status == 200:
-                            d = await r2.json()
-                            parts = d["candidates"][0]["content"].get("parts", [])
-                            return " ".join(p["text"] for p in parts if "text" in p).strip()
-                elif resp.status == 404:
-                    fb_url = f"{GEMINI_REST_URL_BASE}/gemini-1.5-flash:generateContent?key={key}"
-                    payload_nt = {k: v for k, v in payload.items() if k != "tools"}
-                    async with sess.post(fb_url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=40)) as r2:
-                        if r2.status == 200:
-                            d = await r2.json()
-                            parts = d["candidates"][0]["content"].get("parts", [])
-                            return " ".join(p["text"] for p in parts if "text" in p).strip()
+                            d2 = await r2.json()
+                            c2 = d2.get("candidates", [])
+                            if c2 and "content" in c2[0]:
+                                p2 = c2[0]["content"].get("parts", [])
+                                res2 = " ".join(p["text"] for p in p2 if "text" in p).strip()
+                                return res2
                 else:
-                    body = await resp.text()
-                    print(f"[!] Key #{key_idx} HTTP {resp.status}: {body[:150]}")
-                    skipped.add(key_idx)
-        except asyncio.TimeoutError:
-            print(f"[TIMEOUT] Key #{key_idx} timeout")
-            skipped.add(key_idx)
-            continue
+                    print(f"[!] Key #{key_idx} HTTP {resp.status}")
+                
+                skipped.add(key_idx)
         except Exception as e:
             print(f"[!] Key #{key_idx} hata: {e}")
             skipped.add(key_idx)
-            continue
+            await asyncio.sleep(0.5)
 
-    print(f"[LOOP END] No success across all keys. Returning congestion msg.", flush=True)
+
     return "[!] Su an yogunluk var, tekrar dener misin?"
 
 # ============================================================
@@ -1112,7 +1053,10 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
 # ============================================================
 @app.before_serving
 async def startup():
-    print("[START] Nova 5.0 baslatiliyor...")
+    print("="*50)
+    print(f"[START] Nova 5.0 baslatiliyor... Port: {os.environ.get('PORT', 5000)}")
+    print(f"[KEYS] {len(GEMINI_API_KEYS)} API anahtari yuklendi.")
+    print("="*50)
     global session
     connector = aiohttp.TCPConnector(ssl=False, limit=200, limit_per_host=15)
     session = aiohttp.ClientSession(
@@ -1202,7 +1146,7 @@ async def home():
 
 
 # ── /api/min_version ────────────────────────────────────────
-@app.route("/api/min_version", methods=["GET", "OPTIONS"])
+@app.route("/api/min_version", methods=["GET"])
 async def min_version():
     return jsonify({
         "min_version": "7.0.0",
@@ -1213,7 +1157,7 @@ async def min_version():
 
 
 # ── /api/user_status ────────────────────────────────────────
-@app.route("/api/user_status", methods=["GET", "OPTIONS"])
+@app.route("/api/user_status", methods=["GET"])
 async def user_status():
     user_id   = request.args.get("userId", "anon")
     PLUS_USERS = set(filter(None, os.getenv("PLUS_USER_IDS", "").split(",")))
@@ -1228,7 +1172,7 @@ async def user_status():
 
 
 # ── /api/chat ───────────────────────────────────────────────
-@app.route("/api/chat", methods=["POST", "OPTIONS"])
+@app.route("/api/chat", methods=["POST"])
 async def chat():
     try:
         data = await request.get_json()
@@ -1242,12 +1186,9 @@ async def chat():
         custom    = data.get("systemInstruction") or data.get("systemPrompt", "")
 
         history  = GLOBAL_CACHE["history"].setdefault(user_id, {}).setdefault(chat_id, [])
-        print(f"[REQUEST] User: {user_id}, Chat: {chat_id}, Msg: {user_msg[:50]}...", flush=True)
-        
         response = await gemma_cevap_async(user_msg, history, session, user_id, image_b64, custom)
 
-        if not response or response.startswith("[!]"):
-            print(f"[ERROR] Chat failed: {response}", flush=True)
+        if not response or response.startswith("⚠️"):
             return jsonify({"response": response or "Bir hata olustu.", "status": "error"}), 200
 
         history.append({"sender": "user", "message": user_msg})
@@ -1267,7 +1208,7 @@ async def chat():
 
 
 # ── /api/delete_chat ────────────────────────────────────────
-@app.route("/api/delete_chat", methods=["POST", "OPTIONS"])
+@app.route("/api/delete_chat", methods=["POST"])
 async def delete_chat():
     try:
         data    = await request.get_json()
@@ -1285,14 +1226,14 @@ async def delete_chat():
 
 
 # ── /api/history ────────────────────────────────────────────
-@app.route("/api/history", methods=["GET", "OPTIONS"])
+@app.route("/api/history", methods=["GET"])
 async def get_history():
     user_id = request.args.get("userId", "anon")
     return jsonify(GLOBAL_CACHE["history"].get(user_id, {})), 200
 
 
 # ── /api/share_chat — Sohbeti paylaş, link döndür ───────────
-@app.route("/api/share_chat", methods=["POST", "OPTIONS"])
+@app.route("/api/share_chat", methods=["POST"])
 async def share_chat_api():
     try:
         data = await request.get_json()
@@ -1532,24 +1473,28 @@ async def ws_chat_handler():
             stream_payload = {
                 "contents": contents,
                 "system_instruction": {"parts": [{"text": get_system_prompt()}]},
-                "tools": [{"google_search": {}}],
                 "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000},
             }
 
             full_resp = ""
             async with session.post(url, json=stream_payload) as resp:
-                async for line in resp.content:
-                    line = line.decode("utf-8").strip()
-                    if line.startswith("data:"):
-                        try:
-                            chunk = json.loads(line[5:])
-                            parts = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                            txt   = parts[0].get("text", "") if parts else ""
-                            if txt:
-                                full_resp += txt
-                                await websocket.send(txt)
-                        except json.JSONDecodeError:
-                            continue
+                if resp.status != 200:
+                    await websocket.send(f"[!] API Hatası: {resp.status}")
+                else:
+                    async for line_bytes in resp.content:
+                        line = line_bytes.decode("utf-8", errors="ignore")
+                        if line.startswith("data:"):
+                            try:
+                                chunk = json.loads(line[5:])
+                                candidates = chunk.get("candidates", [])
+                                if candidates:
+                                    parts = candidates[0].get("content", {}).get("parts", [])
+                                    txt = "".join(p.get("text", "") for p in parts)
+                                    if txt:
+                                        full_resp += txt
+                                        await websocket.send(txt)
+                            except Exception:
+                                continue
 
             await websocket.send("[END]")
             history.append({"sender": "user", "message": user_msg})
