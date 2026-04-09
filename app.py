@@ -42,6 +42,7 @@ app = cors(app, allow_origin="*", allow_headers="*", allow_methods="*")
 
 
 session: aiohttp.ClientSession | None = None
+MODEL_SEMAPHORE = asyncio.Semaphore(8)
 
 # ============================================================
 # DOSYA YOLLARI & RAM CACHE
@@ -139,6 +140,8 @@ KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+MODEL_TIMEOUT_SECS = 18
+LIVE_DATA_TIMEOUT_SECS = 8
 
 async def get_next_gemini_key(skip_indices: set | None = None) -> tuple[str, int] | tuple[None, int]:
     global CURRENT_KEY_INDEX
@@ -159,6 +162,32 @@ async def get_next_gemini_key(skip_indices: set | None = None) -> tuple[str, int
 def mark_key_rate_limited_sync(idx: int):
     KEY_COOLDOWNS[idx] = asyncio.get_event_loop().time() + KEY_COOLDOWN_SECS
     print(f"[WAIT] Key #{idx} rate-limited, {KEY_COOLDOWN_SECS}s bekleniyor.")
+
+def _extract_gemini_text(data: dict) -> str:
+    try:
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return ""
+        parts = candidates[0].get("content", {}).get("parts", [])
+        texts = [p.get("text", "").strip() for p in parts if p.get("text")]
+        return "\n".join(t for t in texts if t).strip()
+    except Exception:
+        return ""
+
+def _build_live_fallback(message: str, live_summary: str) -> str:
+    summary = (live_summary or "").strip()
+    if summary:
+        clean = summary.replace(" | ", "\n- ")
+        if not clean.startswith("- "):
+            clean = "- " + clean
+        return f"Guncel bulgular:\n{clean[:900]}"
+
+    msg = message.strip()
+    if not msg:
+        return "Sorunu anlayamadim, daha net yaz."
+    if len(msg) > 180:
+        msg = msg[:180].rstrip() + "..."
+    return f"Su anda model yaniti uretemedim. Mesajini aldim: \"{msg}\". Tekrar denersen devam edeyim."
 
 # ============================================================
 # HTTP YARDIMCILARI
@@ -783,7 +812,7 @@ DEFAULT_SCRAPERS = ["ddg_instant", "ddg_html"]
 
 async def run_scrapers(query, names, sess):
     tasks = []
-    for n in set(names):
+    for n in dict.fromkeys(names):
         if n == "ddg_instant":     tasks.append(scrape_ddg_instant(query, sess))
         elif n == "ddg_html":      tasks.append(scrape_ddg_html(query, sess))
         elif n == "bing":          tasks.append(scrape_bing(query, sess))
@@ -821,10 +850,20 @@ async def fetch_live_data_full(query, sess):
         if re.search(pattern, msg):
             selected.update(scrapers)
     print(f"[WEB] '{query}' -> scraper'lar: {sorted(selected)}")
-    results = await run_scrapers(query, list(selected), sess)
+    try:
+        results = await asyncio.wait_for(
+            run_scrapers(query, list(selected), sess),
+            timeout=LIVE_DATA_TIMEOUT_SECS,
+        )
+    except asyncio.TimeoutError:
+        print(f"[!] Web toplama timeout ({LIVE_DATA_TIMEOUT_SECS}s): {query}")
+        results = []
     if len(results) < 2:
         print(f"[!] Az sonuc ({len(results)}), Bing ekleniyor...")
-        results.extend(await scrape_bing(query, sess))
+        try:
+            results.extend(await asyncio.wait_for(scrape_bing(query, sess), timeout=4))
+        except asyncio.TimeoutError:
+            print("[!] Bing fallback timeout")
     seen, unique = set(), []
     for r in results:
         k = r.get("snippet", "")[:70]
@@ -946,6 +985,95 @@ def _trim_history(conversation, max_chars=6000):
         trimmed.insert(0, {**msg, "message": text})
     return trimmed
 
+async def _generate_with_gemini(payload, sys_prompt, message, live_context):
+    skipped: set[int] = set()
+    for attempt in range(len(GEMINI_API_KEYS) + 1):
+        key, key_idx = await get_next_gemini_key(skip_indices=skipped)
+        if key is None:
+            break
+        print(f"[KEY] Key #{key_idx} (attempt {attempt+1})")
+        try:
+            url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
+            async with MODEL_SEMAPHORE:
+                async with session.post(
+                    url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
+                ) as resp:
+                    body_text = await resp.text()
+            try:
+                data = json.loads(body_text)
+            except Exception:
+                data = {}
+
+            if resp.status == 200:
+                result = _extract_gemini_text(data)
+                if result:
+                    return result
+                print(f"[!] Key #{key_idx} bos yanit dondurdu")
+
+            elif resp.status == 404:
+                print(f"[!] Key #{key_idx} 404: alternatif model deneniyor...")
+                alt_url = f"{GEMINI_REST_URL_BASE}/gemini-2.0-flash:generateContent?key={key}"
+                async with MODEL_SEMAPHORE:
+                    async with session.post(
+                        alt_url,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=12),
+                    ) as r_alt:
+                        alt_text = await r_alt.text()
+                if r_alt.status == 200:
+                    try:
+                        d_alt = json.loads(alt_text)
+                    except Exception:
+                        d_alt = {}
+                    result = _extract_gemini_text(d_alt)
+                    if result:
+                        return result
+
+            elif resp.status in (429, 503):
+                print(f"[!] Key #{key_idx} gecici olarak kullanilamiyor: HTTP {resp.status}")
+                mark_key_rate_limited_sync(key_idx)
+
+            elif resp.status == 400:
+                print(f"[!] Key #{key_idx} 400: legacy mod deneniyor...")
+                p_legacy = payload.copy()
+                p_legacy.pop("system_instruction", None)
+                legacy_contents = list(p_legacy.get("contents", []))
+                if legacy_contents and legacy_contents[-1]["role"] == "user":
+                    legacy_msg = f"{sys_prompt}\n\nYukaridaki talimatlara gore cevapla:\n{message}{live_context}"
+                    legacy_contents[-1] = {"role": "user", "parts": [{"text": legacy_msg}]}
+                    p_legacy["contents"] = legacy_contents
+                async with MODEL_SEMAPHORE:
+                    async with session.post(
+                        url,
+                        json=p_legacy,
+                        timeout=aiohttp.ClientTimeout(total=12),
+                    ) as r2:
+                        body2 = await r2.text()
+                if r2.status == 200:
+                    try:
+                        d2 = json.loads(body2)
+                    except Exception:
+                        d2 = {}
+                    result = _extract_gemini_text(d2)
+                    if result:
+                        return result
+                elif r2.status in (429, 503):
+                    mark_key_rate_limited_sync(key_idx)
+
+            else:
+                print(f"[!] Key #{key_idx} HTTP {resp.status}: {body_text[:160]}")
+
+            skipped.add(key_idx)
+        except Exception as e:
+            print(f"[!] Key #{key_idx} hata: {e}")
+            skipped.add(key_idx)
+            if "429" in str(e) or "rate" in str(e).lower():
+                mark_key_rate_limited_sync(key_idx)
+            await asyncio.sleep(0.2)
+    return ""
+
 # ============================================================
 # ANA CEVAP MOTORU
 # ============================================================
@@ -960,14 +1088,15 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
             return cached
 
     live_context = ""
+    live_summary = ""
     needed, opt_query = await should_search(message, sess)
     if needed:
         q = opt_query or message
         print(f"[WEB] Arama: '{q}'")
-        summary = await fetch_live_data_full(q, sess)
-        if summary:
-            live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
-            print(f"[OK] WEB_DATA ({len(summary)} chr)")
+        live_summary = await fetch_live_data_full(q, sess)
+        if live_summary:
+            live_context = f"\n\n<WEB_DATA>{live_summary}</WEB_DATA>"
+            print(f"[OK] WEB_DATA ({len(live_summary)} chr)")
 
     trimmed_history = _trim_history(conversation)
     contents = []
@@ -992,9 +1121,16 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": sys_prompt}]},
-        "tools": [{"google_search": {}}],
-        "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000},
+        "generationConfig": {"temperature": 0.45, "topP": 0.85, "maxOutputTokens": 700},
     }
+
+    result = await _generate_with_gemini(payload, sys_prompt, message, live_context)
+    if result:
+        if _is_cacheable(message) and not image_data and not custom_prompt:
+            resp_cache_set(message, result)
+        return result
+
+    return _build_live_fallback(message, live_summary)
 
     skipped: set[int] = set()
     for attempt in range(len(GEMINI_API_KEYS) + 1):
@@ -1004,8 +1140,9 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
         print(f"[KEY] Key #{key_idx} (attempt {attempt+1})")
         try:
             url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
-            async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=40)) as resp:
-                body_text = await resp.text()
+            async with MODEL_SEMAPHORE:
+                async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS)) as resp:
+                    body_text = await resp.text()
                 try:
                     data = json.loads(body_text)
                 except:
