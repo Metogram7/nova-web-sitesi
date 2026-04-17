@@ -1565,7 +1565,7 @@ body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemF
        max-width:400px;width:100%;text-align:center;box-shadow:0 24px 60px rgba(0,0,0,.5)}}
 .logo{{font-size:28px;font-weight:900;color:#38bdf8;letter-spacing:8px;margin-bottom:6px}}
 .sub{{color:#334155;font-size:11px;letter-spacing:3px;margin-bottom:28px}}
-.code-wrap{{background:linear-gradient(135deg, #1e293b, #0f172a);border:2px solid #38bdf8;border-radius:14px;padding:18px;margin:16px 0 20px}}
+.code-wrap{{background:linear-gradient(135deg,#1e293b,#0f172a);border:2px solid #38bdf8;border-radius:14px;padding:18px;margin:16px 0 20px}}
 .code-lbl{{color:#475569;font-size:11px;letter-spacing:2px;margin-bottom:6px}}
 .code{{color:#38bdf8;font-size:34px;font-weight:900;letter-spacing:8px}}
 .steps{{text-align:left;background:#1e293b;border-radius:14px;padding:18px;margin-bottom:22px}}
@@ -1573,11 +1573,12 @@ body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemF
 .num{{background:#38bdf8;color:#090e1c;width:20px;height:20px;border-radius:50%;
       display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;
       flex-shrink:0;margin-right:10px;margin-top:1px}}
-.btn{{display:block;padding:15px;border-radius:14px;font-weight:900;font-size:14px;text-decoration:none;margin-bottom:10px;transition: transform 0.2s}}
-.btn:active{{transform: scale(0.98)}}
+.btn{{display:block;padding:15px;border-radius:14px;font-weight:900;font-size:14px;text-decoration:none;margin-bottom:10px;transition:transform 0.2s}}
+.btn:active{{transform:scale(0.98)}}
 .btn-main{{background:#38bdf8;color:#090e1c}}
 .btn-out{{border:2px solid #38bdf8;color:#38bdf8}}
 .note{{font-size:10px;color:#1e3a5f;margin-top:18px}}
+#status{{font-size:12px;color:#38bdf8;min-height:20px;margin-bottom:10px}}
 </style>
 </head>
 <body>
@@ -1589,27 +1590,35 @@ body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemF
     <div class="code-lbl">ODA KODU</div>
     <div class="code">{room_code}</div>
   </div>
-  <div class="steps">
-    <div class="step"><div class="num">1</div><div>Nova'yı aç veya Play Store'dan indir.</div></div>
-    <div class="step"><div class="num">2</div><div>Aşağıdaki <strong style="color:#38bdf8">Uygulamayı Aç</strong>'a bas.</div></div>
-    <div class="step"><div class="num">3</div><div>Oda otomatik olarak yüklenecek! 🚀</div></div>
-  </div>
-  <a href="novawebb://join/{room_code}" class="btn btn-main" id="deeplink">🚀 Uygulamayı Aç</a>
+  <div id="status">Uygulama açılıyor...</div>
+  <a href="intent://join/{room_code}#Intent;scheme=novawebb;package=com.novawebb.app;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.novawebb.app;end" class="btn btn-main" id="deeplink">🚀 Uygulamayı Aç</a>
   <a href="https://play.google.com/store/apps/details?id=com.novawebb.app" class="btn btn-out">📱 Henüz Yüklü Değilse İndir</a>
   <p class="note">nova-chat-d50f.onrender.com · Nova AI · Oda: {room_code}</p>
 </div>
 <script>
-  function openApp() {{
-    window.location.href = "novawebb://join/{room_code}";
-    // Fallback logic: if after 2 seconds nothing happens, user might not have app
+  // intent:// — Chrome'un native deep link formatı, JS redirect'e gerek yok
+  // Sayfa açılır açılmaz butona tıklayarak intent'i tetikle
+  var attempts = 0;
+  var statusEl = document.getElementById('status');
+  var deeplink = document.getElementById('deeplink');
+
+  function tryOpen() {{
+    attempts++;
+    // intent:// linke programatik navigate
+    var intentUrl = "intent://join/{room_code}#Intent;scheme=novawebb;package=com.novawebb.app;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.novawebb.app;end";
+    window.location.href = intentUrl;
+
     setTimeout(function() {{
-       console.log("Deep link triggered.");
-    }}, 2000);
+      if (attempts < 2) {{
+        statusEl.textContent = "Açılmadıysa butona dokunun 👆";
+      }}
+    }}, 1500);
   }}
-  // Sayfa yüklendiğinde otomatik dene
-  window.onload = function() {{
-    setTimeout(openApp, 500);
-  }};
+
+  // Sayfa hazır olunca otomatik dene
+  document.addEventListener('DOMContentLoaded', function() {{
+    setTimeout(tryOpen, 400);
+  }});
 </script>
 </body>
 </html>"""
