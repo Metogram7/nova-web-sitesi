@@ -1432,7 +1432,7 @@ async def share_chat_api():
             "success": True,
             "share_id": share_id,
             "id": share_id,
-            "share_url": f"https://novawebb.com/share/{share_id}",
+            "share_url": f"https://nova-chat-d50f.onrender.com/share/{share_id}",
             "expires_at": shared_data["expires_at"],
         }), 200
 
@@ -1486,8 +1486,8 @@ async def view_shared_chat(share_id):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title} — Nova AI</title>
 <meta property="og:title" content="{title}">
-<meta property="og:description" content="Nova AI ile yapılmış sohbeti görüntüle — novawebb.com">
-<meta property="og:url" content="https://novawebb.com/share/{share_id}">
+<meta property="og:description" content="Nova AI ile yapılmış sohbeti görüntüle — nova-chat-d50f.onrender.com">
+<meta property="og:url" content="https://nova-chat-d50f.onrender.com/share/{share_id}">
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}}
@@ -1506,7 +1506,7 @@ body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemF
 <div class="wrap">
   <div class="hdr">
     <div class="logo">NOVA AI</div>
-    <div class="sub">NOVAWEBB.COM</div>
+    <div class="sub">NOVA AI</div>
   </div>
   <div class="badge">PAYLAŞILAN SOHBET</div>
   <div class="chat-title">{title}</div>
@@ -1577,7 +1577,7 @@ body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemF
   </div>
   <a href="novawebb://join/{room_code}" class="btn btn-main" id="deeplink">🚀 Uygulamayı Aç</a>
   <a href="https://play.google.com/store/apps/details?id=com.novawebb.app" class="btn btn-out">📱 Henüz Yüklü Değilse İndir</a>
-  <p class="note">novawebb.com · Nova AI · Oda: {room_code}</p>
+  <p class="note">nova-chat-d50f.onrender.com · Nova AI · Oda: {room_code}</p>
 </div>
 <script>
   function openApp() {{
