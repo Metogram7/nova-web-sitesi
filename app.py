@@ -1545,81 +1545,67 @@ body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemF
 # ── /join/<room_code> — Grup sohbeti davet linki ────────────
 @app.route("/join/<room_code>", methods=["GET"])
 async def join_room(room_code):
-    """
-    Tarayıcıda: nova uygulamasını aç / indir sayfası gösterir.
-    Uygulama zaten kuruluysa: novawebb://join/XXXXXX deep link çalışır.
-    """
     room_code = room_code.upper()
+    store_url = "https://play.google.com/store/apps/details?id=com.novawebb.app"
+    # intent:// — Chrome'un resmi deep link formatı
+    # Uygulama varsa açar, yoksa browser_fallback_url'e yönlendirir
+    intent_url = f"intent://join/{room_code}#Intent;scheme=novawebb;package=com.novawebb.app;S.browser_fallback_url={store_url.replace(':', '%3A').replace('/', '%2F').replace('?', '%3F').replace('=', '%3D')};end"
 
     html = f"""<!DOCTYPE html>
 <html lang="tr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Nova Sohbet Daveti — {room_code}</title>
+<title>Nova — Odaya Katıl</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{height:100%}}
 body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-      display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}}
-.card{{background:#0f172a;border:1px solid #1e293b;border-radius:22px;padding:38px 28px;
-       max-width:400px;width:100%;text-align:center;box-shadow:0 24px 60px rgba(0,0,0,.5)}}
-.logo{{font-size:28px;font-weight:900;color:#38bdf8;letter-spacing:8px;margin-bottom:6px}}
-.sub{{color:#334155;font-size:11px;letter-spacing:3px;margin-bottom:28px}}
-.code-wrap{{background:linear-gradient(135deg,#1e293b,#0f172a);border:2px solid #38bdf8;border-radius:14px;padding:18px;margin:16px 0 20px}}
-.code-lbl{{color:#475569;font-size:11px;letter-spacing:2px;margin-bottom:6px}}
-.code{{color:#38bdf8;font-size:34px;font-weight:900;letter-spacing:8px}}
-.steps{{text-align:left;background:#1e293b;border-radius:14px;padding:18px;margin-bottom:22px}}
-.step{{display:flex;align-items:flex-start;margin-bottom:11px;font-size:13px;color:#94a3b8}}
-.num{{background:#38bdf8;color:#090e1c;width:20px;height:20px;border-radius:50%;
-      display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;
-      flex-shrink:0;margin-right:10px;margin-top:1px}}
-.btn{{display:block;padding:15px;border-radius:14px;font-weight:900;font-size:14px;text-decoration:none;margin-bottom:10px;transition:transform 0.2s}}
-.btn:active{{transform:scale(0.98)}}
-.btn-main{{background:#38bdf8;color:#090e1c}}
-.btn-out{{border:2px solid #38bdf8;color:#38bdf8}}
-.note{{font-size:10px;color:#1e3a5f;margin-top:18px}}
-#status{{font-size:12px;color:#38bdf8;min-height:20px;margin-bottom:10px}}
+     display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}}
+.wrap{{max-width:380px;width:100%;text-align:center}}
+.logo{{font-size:13px;font-weight:700;color:#334155;letter-spacing:4px;margin-bottom:40px}}
+.avatar{{width:80px;height:80px;background:linear-gradient(135deg,#38bdf8,#8b5cf6);
+         border-radius:24px;display:flex;align-items:center;justify-content:center;
+         font-size:36px;margin:0 auto 20px}}
+h1{{font-size:22px;font-weight:800;color:#f1f5f9;margin-bottom:8px}}
+.desc{{color:#64748b;font-size:14px;margin-bottom:32px;line-height:1.5}}
+.code-box{{background:#0f172a;border:1.5px solid #1e3a5f;border-radius:16px;
+           padding:16px 20px;margin-bottom:32px;display:inline-block}}
+.code-lbl{{font-size:10px;color:#334155;letter-spacing:3px;margin-bottom:4px}}
+.code-val{{font-size:28px;font-weight:900;color:#38bdf8;letter-spacing:6px}}
+.btn-join{{display:block;width:100%;padding:18px;border-radius:16px;
+           background:linear-gradient(135deg,#38bdf8,#0ea5e9);
+           color:#090e1c;font-size:17px;font-weight:900;text-decoration:none;
+           box-shadow:0 8px 32px rgba(56,189,248,.35);
+           transition:transform .15s,box-shadow .15s;margin-bottom:12px}}
+.btn-join:active{{transform:scale(0.97);box-shadow:0 4px 16px rgba(56,189,248,.2)}}
+.btn-store{{display:block;width:100%;padding:14px;border-radius:16px;
+            border:1.5px solid #1e3a5f;color:#38bdf8;
+            font-size:14px;font-weight:700;text-decoration:none;
+            transition:border-color .15s}}
+.btn-store:active{{border-color:#38bdf8}}
+.hint{{font-size:11px;color:#1e3a5f;margin-top:20px}}
 </style>
 </head>
 <body>
-<div class="card">
-  <div class="logo">NOVA</div>
-  <div class="sub">GRUP SOHBETİ</div>
-  <p style="color:#94a3b8;font-size:13px">Seni harika bir odaya davet ettiler!</p>
-  <div class="code-wrap">
+<div class="wrap">
+  <div class="logo">NOVA AI</div>
+  <div class="avatar">💬</div>
+  <h1>Sohbet Odası Daveti</h1>
+  <p class="desc">Seni bir sohbet odasına davet ettiler.<br>Aşağıdaki butona bas ve odaya katıl.</p>
+  <div class="code-box">
     <div class="code-lbl">ODA KODU</div>
-    <div class="code">{room_code}</div>
+    <div class="code-val">{room_code}</div>
   </div>
-  <div id="status">Uygulama açılıyor...</div>
-  <a href="intent://join/{room_code}#Intent;scheme=novawebb;package=com.novawebb.app;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.novawebb.app;end" class="btn btn-main" id="deeplink">🚀 Uygulamayı Aç</a>
-  <a href="https://play.google.com/store/apps/details?id=com.novawebb.app" class="btn btn-out">📱 Henüz Yüklü Değilse İndir</a>
-  <p class="note">nova-chat-d50f.onrender.com · Nova AI · Oda: {room_code}</p>
+  <br>
+  <a href="{intent_url}" class="btn-join">
+    🚀 Odaya Katıl
+  </a>
+  <a href="{store_url}" class="btn-store">
+    📱 Nova Yüklü Değilse İndir
+  </a>
+  <p class="hint">Nova yüklüyse "Odaya Katıl"a basınca uygulama otomatik açılır.</p>
 </div>
-<script>
-  // intent:// — Chrome'un native deep link formatı, JS redirect'e gerek yok
-  // Sayfa açılır açılmaz butona tıklayarak intent'i tetikle
-  var attempts = 0;
-  var statusEl = document.getElementById('status');
-  var deeplink = document.getElementById('deeplink');
-
-  function tryOpen() {{
-    attempts++;
-    // intent:// linke programatik navigate
-    var intentUrl = "intent://join/{room_code}#Intent;scheme=novawebb;package=com.novawebb.app;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.novawebb.app;end";
-    window.location.href = intentUrl;
-
-    setTimeout(function() {{
-      if (attempts < 2) {{
-        statusEl.textContent = "Açılmadıysa butona dokunun 👆";
-      }}
-    }}, 1500);
-  }}
-
-  // Sayfa hazır olunca otomatik dene
-  document.addEventListener('DOMContentLoaded', function() {{
-    setTimeout(tryOpen, 400);
-  }});
-</script>
 </body>
 </html>"""
 
