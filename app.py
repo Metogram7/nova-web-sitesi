@@ -1318,6 +1318,25 @@ async def home():
             f"Cache: {len(_RESP_CACHE)} | Paylaşımlar: {len(SHARED_CHATS)}")
 
 
+# ── /.well-known/assetlinks.json — Android App Links doğrulaması ──
+@app.route("/.well-known/assetlinks.json", methods=["GET"])
+async def assetlinks():
+    data = [
+        {
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "com.novawebb.app",
+                "sha256_cert_fingerprints": [
+                    "EA:47:D9:95:CC:7E:54:72:93:8F:C6:22:F1:D3:2F:C4:F9:F0:01:12:B0:85:27:80:CF:A8:88:47:CD:C0:60:05"
+                ]
+            }
+        }
+    ]
+    import json as _json
+    return Response(_json.dumps(data), mimetype="application/json")
+
+
 # ── /api/min_version ────────────────────────────────────────
 @app.route("/api/min_version", methods=["GET"])
 async def min_version():
