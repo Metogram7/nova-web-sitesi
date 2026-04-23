@@ -138,7 +138,7 @@ CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL_TIMEOUT_SECS = 18
 LIVE_DATA_TIMEOUT_SECS = 8
@@ -1214,4 +1214,89 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
         return result
 
     return _build_live_fallback(message, live_summary)
+
+# ============================================================
+# API ROTLARI & SUNUCU BAŞLATMA
+# ============================================================
+
+@app.before_serving
+async def startup():
+    global session
+    session = aiohttp.ClientSession()
+    print("[OK] aiohttp session baslatildi.")
+
+@app.after_serving
+async def shutdown():
+    if session:
+        await session.close()
+        print("[OK] aiohttp session kapatildi.")
+
+@app.route("/", methods=["GET"])
+async def index():
+    return "Nova API is running. 🚀"
+
+@app.route("/api/chat", methods=["POST"])
+async def chat_endpoint():
+    try:
+        data = await request.get_json()
+        if not data:
+            return jsonify({"error": "JSON body missing"}), 400
+
+        user_id      = data.get("userId", "anonymous")
+        message      = data.get("message", "").strip()
+        image        = data.get("image")
+        sys_prompt   = data.get("systemPrompt", "")
+        current_chat = data.get("currentChat", "default")
+
+        if not message and not image:
+            return jsonify({"error": "Message or image is required"}), 400
+
+        # Geçmişi yükle/yönet (Local cache üzerinden)
+        if user_id not in GLOBAL_CACHE["history"]:
+            GLOBAL_CACHE["history"][user_id] = {}
+        
+        if current_chat not in GLOBAL_CACHE["history"][user_id]:
+            GLOBAL_CACHE["history"][user_id][current_chat] = []
+        
+        conversation = GLOBAL_CACHE["history"][user_id][current_chat]
+        user_name = data.get("userInfo", {}).get("name", "User")
+
+        # Cevabı üret
+        response_text = await gemma_cevap_async(
+            message, 
+            conversation, 
+            session, 
+            user_name=user_name, 
+            image_data=image, 
+            custom_prompt=sys_prompt
+        )
+
+        # Geçmişe ekle (API tarafında da tutalım, her ne kadar frontend Firestore kullansa da)
+        conversation.append({"sender": "user", "message": message, "timestamp": time.time()})
+        conversation.append({"sender": "nova", "message": response_text, "timestamp": time.time()})
+        
+        # Fazla geçmişi buda
+        if len(conversation) > 40:
+            GLOBAL_CACHE["history"][user_id][current_chat] = conversation[-40:]
+
+        return jsonify({
+            "response": response_text,
+            "status": "success"
+        })
+
+    except Exception as e:
+        print(f"[ERROR] Chat endpoint: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/subscribe", methods=["POST"])
+async def subscribe_endpoint():
+    # Bildirim aboneliği için basit placeholder
+    return jsonify({"status": "success"})
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    print(f"Nova Sunucusu {port} portunda baslatiliyor...")
+    app.run(host="0.0.0.0", port=port)
+
 
