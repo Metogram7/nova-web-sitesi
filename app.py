@@ -1014,9 +1014,6 @@ Tarih/Saat: {get_nova_date()}
 • Kod: Direkt kod bloğu, ekstra konuşma yok
 • Açıklama: Kısa paragraf + gerekirse madde işareti
 • Önemli şeyler **kalın** yazılabilir
-
-━━━ AMAÇ ━━━
-Hızlı, doğru, akıllı ama aynı zamanda “kanka gibi” hissettiren bir asistan olmak 🚀💙
 """
 
 def _trim_history(conversation, max_chars=6000):
