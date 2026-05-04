@@ -138,12 +138,10 @@ CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
-GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL_TIMEOUT_SECS = 18
 LIVE_DATA_TIMEOUT_SECS = 8
-GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "800"))
-GEMINI_MAX_LIMIT = 1200
 
 async def get_next_gemini_key(skip_indices: set | None = None) -> tuple[str, int] | tuple[None, int]:
     global CURRENT_KEY_INDEX
@@ -175,32 +173,6 @@ def _extract_gemini_text(data: dict) -> str:
         return "\n".join(t for t in texts if t).strip()
     except Exception:
         return ""
-
-def _extract_finish_reason(data: dict) -> str:
-    try:
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return ""
-        return (candidates[0].get("finishReason") or "").strip()
-    except Exception:
-        return ""
-
-def _extract_safety_blocked(data: dict) -> bool:
-    try:
-        candidates = data.get("candidates", [])
-        if not candidates:
-            # Check if there is prompt feedback indicating a block
-            feedback = data.get("promptFeedback", {})
-            if feedback.get("blockReason"):
-                return True
-            return False
-        reason = (candidates[0].get("finishReason") or "").upper()
-        return reason in ("SAFETY", "OTHER")
-    except Exception:
-        return False
-
-def _was_max_token_cutoff(data: dict) -> bool:
-    return _extract_finish_reason(data).upper() == "MAX_TOKENS"
 
 def _build_live_fallback(message: str, live_summary: str) -> str:
     summary = (live_summary or "").strip()
@@ -1014,6 +986,9 @@ Tarih/Saat: {get_nova_date()}
 • Kod: Direkt kod bloğu, ekstra konuşma yok
 • Açıklama: Kısa paragraf + gerekirse madde işareti
 • Önemli şeyler **kalın** yazılabilir
+
+━━━ AMAÇ ━━━
+Hızlı, doğru, akıllı ama aynı zamanda “kanka gibi” hissettiren bir asistan olmak 🚀💙
 """
 
 def _trim_history(conversation, max_chars=6000):
@@ -1050,105 +1025,57 @@ async def _generate_with_gemini(payload, sys_prompt, message, live_context):
             if resp.status == 200:
                 result = _extract_gemini_text(data)
                 if result:
-                    if _was_max_token_cutoff(data):
-                        print(f"[!] Key #{key_idx} max token sinirina takildi, devam isteniyor...")
-                        continuation_payload = {
-                            **payload,
-                            "contents": list(payload.get("contents", [])) + [
-                                {"role": "model", "parts": [{"text": result}]},
-                                {
-                                    "role": "user",
-                                    "parts": [{
-                                        "text": (
-                                            "Ayni cevaba, onceki metni tekrar etmeden, tam kaldigin yerden devam et "
-                                            "ve cevabi tamamla."
-                                        )
-                                    }],
-                                },
-                            ],
-                        }
-                        async with MODEL_SEMAPHORE:
-                            async with session.post(
-                                url,
-                                json=continuation_payload,
-                                timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
-                            ) as r_continue:
-                                continue_body = await r_continue.text()
-                        if r_continue.status == 200:
-                            try:
-                                continue_data = json.loads(continue_body)
-                            except Exception:
-                                continue_data = {}
-                            continuation_text = _extract_gemini_text(continue_data)
-                            if continuation_text:
-                                result = f"{result.rstrip()}\n{continuation_text.lstrip()}".strip()
                     return result
-                if _extract_safety_blocked(data):
-                    print(f"[!] Key #{key_idx} guvenlik filtresine takildi")
-                    return "⚠️ Bu mesaj güvenlik filtrelerine takıldı. Lütfen farklı bir şekilde sormayı dene."
                 print(f"[!] Key #{key_idx} bos yanit dondurdu")
 
-            elif resp.status == 404:
-                print(f"[!] Key #{key_idx} 404: alternatif model deneniyor...")
-                alt_url = f"{GEMINI_REST_URL_BASE}/gemini-2.0-flash:generateContent?key={key}"
-                async with MODEL_SEMAPHORE:
-                    async with session.post(
-                        alt_url,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=12),
-                    ) as r_alt:
-                        alt_text = await r_alt.text()
-                if r_alt.status == 200:
-                    try:
-                        d_alt = json.loads(alt_text)
-                    except Exception:
-                        d_alt = {}
-                    result = _extract_gemini_text(d_alt)
-                    if result:
-                        return result
-
-            elif resp.status in (429, 503):
-                print(f"[!] Key #{key_idx} gecici olarak kullanilamiyor: HTTP {resp.status}")
+            elif resp.status == 429 or resp.status == 503:
                 mark_key_rate_limited_sync(key_idx)
-
-            elif resp.status == 400:
-                print(f"[!] Key #{key_idx} 400: legacy mod deneniyor...")
-                p_legacy = payload.copy()
-                p_legacy.pop("system_instruction", None)
-                legacy_contents = list(p_legacy.get("contents", []))
-                if legacy_contents and legacy_contents[-1]["role"] == "user":
-                    legacy_msg = f"{sys_prompt}\n\nYukaridaki talimatlara gore cevapla:\n{message}{live_context}"
-                    legacy_contents[-1] = {"role": "user", "parts": [{"text": legacy_msg}]}
-                    p_legacy["contents"] = legacy_contents
-                async with MODEL_SEMAPHORE:
-                    async with session.post(
-                        url,
-                        json=p_legacy,
-                        timeout=aiohttp.ClientTimeout(total=12),
-                    ) as r2:
-                        body2 = await r2.text()
-                if r2.status == 200:
-                    try:
-                        d2 = json.loads(body2)
-                    except Exception:
-                        d2 = {}
-                    result = _extract_gemini_text(d2)
-                    if result:
-                        return result
-                elif r2.status in (429, 503):
-                    mark_key_rate_limited_sync(key_idx)
-
-            else:
-                print(f"[!] Key #{key_idx} HTTP {resp.status}: {body_text[:160]}")
-
+            
             skipped.add(key_idx)
         except Exception as e:
             print(f"[!] Key #{key_idx} hata: {e}")
             skipped.add(key_idx)
-            if "429" in str(e) or "rate" in str(e).lower():
-                mark_key_rate_limited_sync(key_idx)
             await asyncio.sleep(0.2)
     return ""
+
+async def _generate_with_gemini_stream(payload, sys_prompt, message, live_context):
+    skipped: set[int] = set()
+    for attempt in range(len(GEMINI_API_KEYS) + 1):
+        key, key_idx = await get_next_gemini_key(skip_indices=skipped)
+        if key is None:
+            break
+        print(f"[KEY-STREAM] Key #{key_idx} (attempt {attempt+1})")
+        try:
+            url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
+            async with MODEL_SEMAPHORE:
+                async with session.post(
+                    url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
+                ) as resp:
+                    if resp.status == 200:
+                        async for line_bytes in resp.content:
+                            line = line_bytes.decode("utf-8", errors="ignore")
+                            if line.startswith("data:"):
+                                try:
+                                    chunk = json.loads(line[5:])
+                                    candidates = chunk.get("candidates", [])
+                                    if candidates:
+                                        parts = candidates[0].get("content", {}).get("parts", [])
+                                        txt = "".join(p.get("text", "") for p in parts)
+                                        if txt:
+                                            yield txt
+                                except:
+                                    continue
+                        return
+                    elif resp.status in (429, 503):
+                        mark_key_rate_limited_sync(key_idx)
+            skipped.add(key_idx)
+        except Exception as e:
+            print(f"[STREAM-ERR] Key #{key_idx}: {e}")
+            skipped.add(key_idx)
+    yield ""
+
 
 # ============================================================
 # ANA CEVAP MOTORU
@@ -1197,11 +1124,7 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
     payload = {
         "contents": contents,
         "system_instruction": {"parts": [{"text": sys_prompt}]},
-        "generationConfig": {
-            "temperature": 0.45, 
-            "topP": 0.85, 
-            "maxOutputTokens": min(GEMINI_MAX_OUTPUT_TOKENS, GEMINI_MAX_LIMIT)
-        },
+        "generationConfig": {"temperature": 0.45, "topP": 0.85, "maxOutputTokens": 1000},
     }
 
     result = await _generate_with_gemini(payload, sys_prompt, message, live_context)
@@ -1212,88 +1135,654 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
 
     return _build_live_fallback(message, live_summary)
 
-# ============================================================
-# API ROTLARI & SUNUCU BAŞLATMA
-# ============================================================
+async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_data=None, custom_prompt=""):
+    if not GEMINI_API_KEYS:
+        yield "[!] API anahtarı eksik."
+        return
 
+    live_context = ""
+    live_summary = ""
+    needed, opt_query = await should_search(message, sess)
+    if needed:
+        q = opt_query or message
+        live_summary = await fetch_live_data_full(q, sess)
+        if live_summary:
+            live_context = f"\n\n<WEB_DATA>{live_summary}</WEB_DATA>"
+
+    trimmed_history = _trim_history(conversation)
+    contents = []
+    for m in trimmed_history:
+        contents.append({
+            "role": "user" if m["sender"] == "user" else "model",
+            "parts": [{"text": m["message"]}]
+        })
+
+    user_parts = [{"text": f"{message}{live_context}"}]
+    if image_data:
+        img = image_data
+        if "," in img: _, img = img.split(",", 1)
+        user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img}})
+    contents.append({"role": "user", "parts": user_parts})
+
+    sys_prompt = get_system_prompt()
+    if custom_prompt:
+        sys_prompt += f"\n\n[EK TALİMAT]: {custom_prompt}"
+
+    payload = {
+        "contents": contents,
+        "system_instruction": {"parts": [{"text": sys_prompt}]},
+        "generationConfig": {"temperature": 0.6, "topP": 0.9, "maxOutputTokens": 1500},
+    }
+
+    async for chunk in _generate_with_gemini_stream(payload, sys_prompt, message, live_context):
+        if chunk:
+            yield chunk
+
+
+    skipped: set[int] = set()
+    for attempt in range(len(GEMINI_API_KEYS) + 1):
+        key, key_idx = await get_next_gemini_key(skip_indices=skipped)
+        if key is None:
+            break
+        print(f"[KEY] Key #{key_idx} (attempt {attempt+1})")
+        try:
+            url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
+            async with MODEL_SEMAPHORE:
+                async with sess.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS)) as resp:
+                    body_text = await resp.text()
+                try:
+                    data = json.loads(body_text)
+                except:
+                    data = {}
+
+                if resp.status == 200:
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        result = " ".join(p["text"] for p in parts if "text" in p).strip()
+                        if result:
+                            print(f"[OK] Key #{key_idx} basarili")
+                            if _is_cacheable(message) and not image_data and not custom_prompt:
+                                resp_cache_set(message, result)
+                            return result
+                    print(f"[!] Key #{key_idx} bos yanıt dondurdu (Safety filter?)")
+
+                elif resp.status == 404:
+                    print(f"[!] Key #{key_idx} 404: Model bulunamadi, fallback deneniyor...")
+                    # 404 durumunda ana modelle son bir kez dene (endpoint farklılığı ihtimaline karşı)
+                    alt_url = f"{GEMINI_REST_URL_BASE}/gemini-2.0-flash:generateContent?key={key}"
+                    async with sess.post(alt_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as r_alt:
+                        if r_alt.status == 200:
+                            d_alt = await r_alt.json()
+                            parts = d_alt["candidates"][0]["content"].get("parts", [])
+                            return " ".join(p["text"] for p in parts if "text" in p).strip()
+
+                elif resp.status == 400:
+                    print(f"[!] Key #{key_idx} 400: Parametre hatasi, sadeleştiriliyor...")
+                    # 1. Aşama: Tools çıkarılmış halini dene
+                    payload_nt = {k: v for k, v in payload.items() if k != "tools"}
+                    async with sess.post(url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=30)) as r2:
+                        if r2.status == 200:
+                            d2 = await r2.json()
+                            return " ".join(p["text"] for p in d2["candidates"][0]["content"]["parts"] if "text" in p).strip()
+                        
+                        # 2. Aşama: Hala 400 ise System Instruction alanını mesajın içine göm (Legacy Mode)
+                        p_legacy = payload_nt.copy()
+                        if "system_instruction" in p_legacy:
+                            del p_legacy["system_instruction"]
+                            legacy_msg = f"{sys_prompt}\n\nYukarıdaki talimatlara göre cevapla:\n{message}"
+                            # Mesajlar listesinde son mesajı güncelle
+                            if p_legacy["contents"] and p_legacy["contents"][-1]["role"] == "user":
+                                p_legacy["contents"][-1]["parts"][0]["text"] = f"{legacy_msg}{live_context}"
+                            
+                            async with sess.post(url, json=p_legacy, timeout=aiohttp.ClientTimeout(total=30)) as r3:
+                                if r3.status == 200:
+                                    d3 = await r3.json()
+                                    return " ".join(p["text"] for p in d3["candidates"][0]["content"]["parts"] if "text" in p).strip()
+
+                else:
+                    print(f"[!] Key #{key_idx} HTTP {resp.status}: {body_text[:100]}")
+                
+                skipped.add(key_idx)
+        except Exception as e:
+            print(f"[!] Key #{key_idx} hata: {e}")
+            skipped.add(key_idx)
+            await asyncio.sleep(0.5)
+
+
+    return "[!] Su an yogunluk var, tekrar dener misin?"
+
+# ============================================================
+# YAŞAM DÖNGÜSÜ
+# ============================================================
 @app.before_serving
 async def startup():
+    print("="*50)
+    print(f"[START] Nova 5.0 baslatiliyor... Port: {os.environ.get('PORT', 5000)}")
+    print(f"[KEYS] {len(GEMINI_API_KEYS)} API anahtari yuklendi.")
+    print("="*50)
     global session
-    session = aiohttp.ClientSession()
-    print("[OK] aiohttp session baslatildi.")
+    connector = aiohttp.TCPConnector(ssl=False, limit=200, limit_per_host=15)
+    session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=45, connect=10),
+        connector=connector,
+        json_serialize=json.dumps
+    )
+    await load_data_to_memory()
+    await load_shared_chats()
+    app.add_background_task(keep_alive)
+    app.add_background_task(background_save_worker)
 
 @app.after_serving
-async def shutdown():
+async def cleanup():
+    global session
+    await save_memory_to_disk(force=True)
+    await save_shared_chats()
     if session:
         await session.close()
-        print("[OK] aiohttp session kapatildi.")
 
-@app.route("/", methods=["GET"])
-async def index():
-    return "Nova API is running. 🚀"
+# ============================================================
+# VERİ YÖNETİMİ
+# ============================================================
+async def load_data_to_memory():
+    files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE,
+                 "api_cache": CACHE_FILE, "tokens": TOKENS_FILE}
+    for key, fn in files_map.items():
+        if os.path.exists(fn):
+            async with aiofiles.open(fn, mode='r', encoding='utf-8') as f:
+                content = await f.read()
+                if content:
+                    try:
+                        GLOBAL_CACHE[key] = json.loads(content)
+                    except Exception:
+                        GLOBAL_CACHE[key] = [] if key == "tokens" else {}
+        else:
+            GLOBAL_CACHE[key] = [] if key == "tokens" else {}
 
+async def load_shared_chats():
+    global SHARED_CHATS
+    if os.path.exists(SHARED_CHATS_FILE):
+        async with aiofiles.open(SHARED_CHATS_FILE, 'r', encoding='utf-8') as f:
+            content = await f.read()
+            if content:
+                try:
+                    SHARED_CHATS = json.loads(content)
+                    print(f"[OK] {len(SHARED_CHATS)} paylasilan sohbet yuklendi.")
+                except Exception:
+                    SHARED_CHATS = {}
+
+async def save_shared_chats():
+    try:
+        tmp = SHARED_CHATS_FILE + ".tmp"
+        async with aiofiles.open(tmp, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(SHARED_CHATS, ensure_ascii=False, indent=2))
+        os.replace(tmp, SHARED_CHATS_FILE)
+    except Exception as e:
+        print(f"[!] Shared chats kayit hatasi: {e}")
+
+async def background_save_worker():
+    while True:
+        await asyncio.sleep(20)
+        await save_memory_to_disk()
+
+async def save_memory_to_disk(force=False):
+    files_map = {"history": HISTORY_FILE, "last_seen": LAST_SEEN_FILE,
+                 "api_cache": CACHE_FILE, "tokens": TOKENS_FILE}
+    for key, fn in files_map.items():
+        if DIRTY_FLAGS[key] or force:
+            try:
+                tmp = fn + ".tmp"
+                async with aiofiles.open(tmp, mode='w', encoding='utf-8') as f:
+                    await f.write(json.dumps(GLOBAL_CACHE[key], ensure_ascii=False, indent=2))
+                os.replace(tmp, fn)
+                DIRTY_FLAGS[key] = False
+            except Exception as e:
+                print(f"[!] Kayit ({key}): {e}")
+
+# ============================================================
+# ROUTE'LAR
+# ============================================================
+
+@app.route("/")
+async def home():
+    return (f"Nova 5.0 — {get_nova_date()} | 17 kaynak aktif ✅ | "
+            f"Cache: {len(_RESP_CACHE)} | Paylaşımlar: {len(SHARED_CHATS)}")
+
+
+# ── /.well-known/assetlinks.json — Android App Links doğrulaması ──
+@app.route("/.well-known/assetlinks.json", methods=["GET"])
+async def assetlinks():
+    data = [
+        {
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "com.novawebb.app",
+                "sha256_cert_fingerprints": [
+                    "EA:47:D9:95:CC:7E:54:72:93:8F:C6:22:F1:D3:2F:C4:F9:F0:01:12:B0:85:27:80:CF:A8:88:47:CD:C0:60:05"
+                ]
+            }
+        }
+    ]
+    import json as _json
+    return Response(_json.dumps(data), mimetype="application/json")
+
+
+# ── /api/min_version ────────────────────────────────────────
+@app.route("/api/min_version", methods=["GET"])
+async def min_version():
+    return jsonify({
+        "min_version": "7.0.0",
+        "latest_version": "7.0.1",
+        "update_message": "Yeni özellikler seni bekliyor! 🚀",
+        "force_update": False,
+    }), 200
+
+
+# ── /api/user_status ────────────────────────────────────────
+@app.route("/api/user_status", methods=["GET"])
+async def user_status():
+    user_id   = request.args.get("userId", "anon")
+    PLUS_USERS = set(filter(None, os.getenv("PLUS_USER_IDS", "").split(",")))
+    is_plus   = user_id in PLUS_USERS
+    return jsonify({
+        "userId": user_id,
+        "is_plus": is_plus,
+        "plan": "plus" if is_plus else "free",
+        "daily_limit": 9999 if is_plus else 20,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }), 200
+
+
+# ── /api/chat ───────────────────────────────────────────────
 @app.route("/api/chat", methods=["POST"])
-async def chat_endpoint():
+async def chat():
     try:
         data = await request.get_json()
         if not data:
-            return jsonify({"error": "JSON body missing"}), 400
+            return jsonify({"error": "Geçersiz JSON"}), 400
 
-        user_id      = data.get("userId", "anonymous")
-        message      = data.get("message", "").strip()
-        image        = data.get("image")
-        sys_prompt   = data.get("systemPrompt", "")
-        current_chat = data.get("currentChat", "default")
+        user_id   = data.get("userId", "anon")
+        chat_id   = data.get("currentChat", "default")
+        user_msg  = data.get("message", "")
+        image_b64 = data.get("image")
+        custom    = data.get("systemInstruction") or data.get("systemPrompt", "")
+        stream    = data.get("stream", False)
 
-        if not message and not image:
-            return jsonify({"error": "Message or image is required"}), 400
+        history = GLOBAL_CACHE["history"].setdefault(user_id, {}).setdefault(chat_id, [])
 
-        # Geçmişi yükle/yönet (Local cache üzerinden)
-        if user_id not in GLOBAL_CACHE["history"]:
-            GLOBAL_CACHE["history"][user_id] = {}
-        
-        if current_chat not in GLOBAL_CACHE["history"][user_id]:
-            GLOBAL_CACHE["history"][user_id][current_chat] = []
-        
-        conversation = GLOBAL_CACHE["history"][user_id][current_chat]
-        user_name = data.get("userInfo", {}).get("name", "User")
+        if stream or request.headers.get("Accept") == "text/event-stream":
+            async def generate():
+                full_resp = ""
+                async for chunk in gemma_cevap_stream(user_msg, history, session, user_id, image_b64, custom):
+                    if chunk:
+                        full_resp += chunk
+                        yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+                
+                if full_resp:
+                    history.append({"sender": "user", "message": user_msg})
+                    history.append({"sender": "nova", "message": full_resp})
+                    DIRTY_FLAGS["history"] = True
+                yield "data: [DONE]\n\n"
 
-        # Cevabı üret
-        response_text = await gemma_cevap_async(
-            message, 
-            conversation, 
-            session, 
-            user_name=user_name, 
-            image_data=image, 
-            custom_prompt=sys_prompt
-        )
+            return Response(generate(), mimetype="text/event-stream")
 
-        # Geçmişe ekle (API tarafında da tutalım, her ne kadar frontend Firestore kullansa da)
-        conversation.append({"sender": "user", "message": message, "timestamp": time.time()})
-        conversation.append({"sender": "nova", "message": response_text, "timestamp": time.time()})
-        
-        # Fazla geçmişi buda
-        if len(conversation) > 40:
-            GLOBAL_CACHE["history"][user_id][current_chat] = conversation[-40:]
+        # Standart (non-stream) yanıt
+        response = await gemma_cevap_async(user_msg, history, session, user_id, image_b64, custom)
+
+        if not response or response.startswith("⚠️"):
+            return jsonify({"response": response or "Bir hata olustu.", "status": "error"}), 200
+
+        history.append({"sender": "user", "message": user_msg})
+        history.append({"sender": "nova", "message": response})
+        DIRTY_FLAGS["history"] = True
 
         return jsonify({
-            "response": response_text,
-            "status": "success"
-        })
+            "response": response,
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "model": GEMINI_MODEL_NAME,
+        }), 200
 
     except Exception as e:
-        print(f"[ERROR] Chat endpoint: {e}")
+        traceback.print_exc()
+        return jsonify({"response": f"[!] Sunucu hatasi: {str(e)}", "status": "error"}), 500
+
+
+
+# ── /api/delete_chat ────────────────────────────────────────
+@app.route("/api/delete_chat", methods=["POST"])
+async def delete_chat():
+    try:
+        data    = await request.get_json()
+        user_id = data.get("userId", "anon")
+        chat_id = data.get("chatId")
+        if not chat_id:
+            return jsonify({"success": False, "error": "chatId gerekli"}), 400
+        chats = GLOBAL_CACHE["history"].get(user_id, {})
+        if chat_id in chats:
+            del chats[chat_id]
+            DIRTY_FLAGS["history"] = True
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ── /api/history ────────────────────────────────────────────
+@app.route("/api/history", methods=["GET"])
+async def get_history():
+    user_id = request.args.get("userId", "anon")
+    return jsonify(GLOBAL_CACHE["history"].get(user_id, {})), 200
+
+
+# ── /api/share_chat — Sohbeti paylaş, link döndür ───────────
+@app.route("/api/share_chat", methods=["POST"])
+async def share_chat_api():
+    try:
+        data = await request.get_json()
+        if not data:
+            return jsonify({"error": "Geçersiz JSON"}), 400
+
+        share_id = str(uuid.uuid4())[:8].upper()
+
+        shared_data = {
+            "id": share_id,
+            "title": data.get("title", "Nova AI Sohbeti"),
+            "user_name": data.get("userName", "Kullanıcı"),
+            "messages": data.get("messages", [])[:100],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "view_count": 0,
+        }
+
+        SHARED_CHATS[share_id] = shared_data
+        asyncio.create_task(save_shared_chats())
+
+        return jsonify({
+            "success": True,
+            "share_id": share_id,
+            "id": share_id,
+            "share_url": f"https://nova-chat-d50f.onrender.com/share/{share_id}",
+            "expires_at": shared_data["expires_at"],
+        }), 200
+
+    except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route("/api/subscribe", methods=["POST"])
-async def subscribe_endpoint():
-    # Bildirim aboneliği için basit placeholder
-    return jsonify({"status": "success"})
+
+# ── /share/<id> — Paylaşılan sohbeti görüntüle ─────────────
+@app.route("/share/<share_id>", methods=["GET"])
+async def view_shared_chat(share_id):
+    share_id = share_id.upper()
+    data = SHARED_CHATS.get(share_id)
+
+    if not data:
+        accept = request.headers.get("Accept", "")
+        if "application/json" in accept:
+            return jsonify({"error": "Sohbet bulunamadı veya süresi doldu."}), 404
+        return "<h2 style='font-family:sans-serif;text-align:center;margin-top:60px'>Sohbet bulunamadı veya 30 günlük süresi doldu 😔</h2>", 404
+
+    data["view_count"] = data.get("view_count", 0) + 1
+    asyncio.create_task(save_shared_chats())
+
+    accept = request.headers.get("Accept", "")
+    if "application/json" in accept:
+        return jsonify(data), 200
+
+    messages  = data.get("messages", [])
+    user_name = data.get("user_name", "Kullanıcı")
+    msgs_html = ""
+    for msg in messages:
+        sender  = msg.get("sender", "user")
+        text    = (msg.get("text", "") or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        is_nova = sender in ("bot", "nova")
+        bg      = "#1a2744" if is_nova else "#151f35"
+        border  = "#38bdf8" if is_nova else "#8b5cf6"
+        label   = "🤖 Nova AI" if is_nova else f"👤 {user_name}"
+        msgs_html += f"""
+        <div style="margin:10px 0;padding:14px 16px;background:{bg};border-left:3px solid {border};border-radius:0 10px 10px 0;">
+          <div style="color:{border};font-size:11px;font-weight:bold;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">{label}</div>
+          <div style="color:#e2e8f0;font-size:14px;line-height:1.65;">{text}</div>
+        </div>"""
+
+    title   = data.get("title", "Nova AI Sohbeti")
+    created = data.get("created_at", "")[:10]
+    store_url = "https://play.google.com/store/apps/details?id=com.novawebb.app"
+    # intent:// — Chrome'un resmi deep link formatı
+    # Uygulama varsa Nova'yı açar, yoksa Play Store'a yönlendirir
+    open_app_url = f"intent://open#Intent;scheme=novawebb;package=com.novawebb.app;S.browser_fallback_url={store_url.replace(':', '%3A').replace('/', '%2F').replace('?', '%3F').replace('=', '%3D')};end"
+
+    html = f"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} — Nova AI</title>
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="Nova AI ile yapılmış sohbeti görüntüle — nova-chat-d50f.onrender.com">
+<meta property="og:url" content="https://nova-chat-d50f.onrender.com/share/{share_id}">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}}
+.wrap{{max-width:720px;margin:0 auto;padding:20px 16px 70px}}
+.hdr{{text-align:center;padding:30px 0 22px;border-bottom:1px solid #1a2744;margin-bottom:22px}}
+.logo{{font-size:26px;font-weight:900;color:#38bdf8;letter-spacing:7px;margin-bottom:4px}}
+.sub{{font-size:11px;color:#334155;letter-spacing:2px}}
+.badge{{display:inline-block;background:#0f2040;color:#38bdf8;padding:4px 12px;border-radius:20px;font-size:10px;font-weight:bold;letter-spacing:2px;margin-bottom:10px}}
+.chat-title{{font-size:17px;font-weight:bold;color:#f1f5f9;margin:10px 0 4px}}
+.meta{{font-size:11px;color:#334155;margin-bottom:18px}}
+.open-app-bar{{position:sticky;top:0;z-index:99;background:#090e1c;border-bottom:1px solid #1e3a5f;
+              padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}}
+.btn-open{{display:inline-block;padding:10px 22px;border-radius:12px;
+           background:linear-gradient(135deg,#38bdf8,#0ea5e9);
+           color:#090e1c;font-size:14px;font-weight:900;text-decoration:none;
+           box-shadow:0 4px 18px rgba(56,189,248,.3);white-space:nowrap}}
+.btn-store-sm{{display:inline-block;padding:10px 16px;border-radius:12px;
+              border:1.5px solid #1e3a5f;color:#64748b;
+              font-size:13px;font-weight:700;text-decoration:none;white-space:nowrap}}
+.footer{{text-align:center;margin-top:40px;padding-top:18px;border-top:1px solid #1a2744}}
+.footer a{{color:#38bdf8;text-decoration:none;font-weight:bold;font-size:14px}}
+</style>
+</head>
+<body>
+<div class="open-app-bar">
+  <span style="color:#94a3b8;font-size:13px">Bu sohbet Nova AI'a ait</span>
+  <div style="display:flex;gap:8px">
+    <a href="{open_app_url}" class="btn-open">📱 Uygulamada Aç</a>
+    <a href="{store_url}" class="btn-store-sm">İndir</a>
+  </div>
+</div>
+<div class="wrap">
+  <div class="hdr" style="padding-top:20px">
+    <div class="logo">NOVA AI</div>
+    <div class="sub">NOVA AI</div>
+  </div>
+  <div class="badge">PAYLAŞILAN SOHBET</div>
+  <div class="chat-title">{title}</div>
+  <div class="meta">📅 {created} &nbsp;·&nbsp; 👁 {data.get('view_count',1)} görüntülenme &nbsp;·&nbsp; 💬 {len(messages)} mesaj</div>
+  {msgs_html}
+  <div class="footer">
+    <p style="color:#334155;font-size:12px;margin-bottom:14px">Nova AI ile oluşturuldu</p>
+    <a href="{store_url}">📱 Nova AI'ı İndir</a>
+  </div>
+</div>
+</body>
+</html>"""
+
+    return Response(html, mimetype="text/html")
+
+
+# ── /join/<room_code> — Grup sohbeti davet linki ────────────
+@app.route("/join/<room_code>", methods=["GET"])
+async def join_room(room_code):
+    room_code = room_code.upper()
+    store_url = "https://play.google.com/store/apps/details?id=com.novawebb.app"
+    # intent:// — Chrome'un resmi deep link formatı
+    # Uygulama varsa açar, yoksa browser_fallback_url'e yönlendirir
+    intent_url = f"intent://join/{room_code}#Intent;scheme=novawebb;package=com.novawebb.app;S.browser_fallback_url={store_url.replace(':', '%3A').replace('/', '%2F').replace('?', '%3F').replace('=', '%3D')};end"
+
+    html = f"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nova — Odaya Katıl</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{height:100%}}
+body{{background:#090e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+     display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}}
+.wrap{{max-width:380px;width:100%;text-align:center}}
+.logo{{font-size:13px;font-weight:700;color:#334155;letter-spacing:4px;margin-bottom:40px}}
+.avatar{{width:80px;height:80px;background:linear-gradient(135deg,#38bdf8,#8b5cf6);
+         border-radius:24px;display:flex;align-items:center;justify-content:center;
+         font-size:36px;margin:0 auto 20px}}
+h1{{font-size:22px;font-weight:800;color:#f1f5f9;margin-bottom:8px}}
+.desc{{color:#64748b;font-size:14px;margin-bottom:32px;line-height:1.5}}
+.code-box{{background:#0f172a;border:1.5px solid #1e3a5f;border-radius:16px;
+           padding:16px 20px;margin-bottom:32px;display:inline-block}}
+.code-lbl{{font-size:10px;color:#334155;letter-spacing:3px;margin-bottom:4px}}
+.code-val{{font-size:28px;font-weight:900;color:#38bdf8;letter-spacing:6px}}
+.btn-join{{display:block;width:100%;padding:18px;border-radius:16px;
+           background:linear-gradient(135deg,#38bdf8,#0ea5e9);
+           color:#090e1c;font-size:17px;font-weight:900;text-decoration:none;
+           box-shadow:0 8px 32px rgba(56,189,248,.35);
+           transition:transform .15s,box-shadow .15s;margin-bottom:12px}}
+.btn-join:active{{transform:scale(0.97);box-shadow:0 4px 16px rgba(56,189,248,.2)}}
+.btn-store{{display:block;width:100%;padding:14px;border-radius:16px;
+            border:1.5px solid #1e3a5f;color:#38bdf8;
+            font-size:14px;font-weight:700;text-decoration:none;
+            transition:border-color .15s}}
+.btn-store:active{{border-color:#38bdf8}}
+.hint{{font-size:11px;color:#1e3a5f;margin-top:20px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">NOVA AI</div>
+  <div class="avatar">💬</div>
+  <h1>Sohbet Odası Daveti</h1>
+  <p class="desc">Seni bir sohbet odasına davet ettiler.<br>Aşağıdaki butona bas ve odaya katıl.</p>
+  <div class="code-box">
+    <div class="code-lbl">ODA KODU</div>
+    <div class="code-val">{room_code}</div>
+  </div>
+  <br>
+  <a href="{intent_url}" class="btn-join">
+    🚀 Odaya Katıl
+  </a>
+  <a href="{store_url}" class="btn-store">
+    📱 Nova Yüklü Değilse İndir
+  </a>
+  <p class="hint">Nova yüklüyse "Odaya Katıl"a basınca uygulama otomatik açılır.</p>
+</div>
+</body>
+</html>"""
+
+    return Response(html, mimetype="text/html")
+
+
+# ── /api/debug/search ────────────────────────────────────────
+@app.route("/api/debug/search")
+async def debug_search():
+    q = request.args.get("q", "dolar kaç")
+    result = await fetch_live_data_full(q, session)
+    return jsonify({
+        "query": q,
+        "result": result,
+        "search_cache": len(_SEARCH_CACHE),
+        "resp_cache": len(_RESP_CACHE),
+        "shared_chats": len(SHARED_CHATS),
+    })
+
+
+# ============================================================
+# WEBSOCKET
+# ============================================================
+@app.websocket("/ws/chat")
+async def ws_chat_handler():
+    await websocket.accept()
+    while True:
+        try:
+            raw      = await websocket.receive()
+            msg      = json.loads(raw)
+            user_id  = msg.get("userId", "anon")
+            chat_id  = msg.get("chatId", "live")
+            user_msg = msg.get("message", "")
+
+            history = GLOBAL_CACHE["history"].setdefault(user_id, {}).setdefault(chat_id, [])
+
+            live_context = ""
+            needed, q = await should_search(user_msg, session)
+            if needed:
+                summary = await fetch_live_data_full(q or user_msg, session)
+                if summary:
+                    live_context = f"\n\n<WEB_DATA>{summary}</WEB_DATA>"
+
+            trimmed_history = _trim_history(history)
+            contents = []
+            for m in trimmed_history:
+                contents.append({
+                    "role": "user" if m["sender"] == "user" else "model",
+                    "parts": [{"text": m["message"]}],
+                })
+            contents.append({"role": "user", "parts": [{"text": f"{user_msg}{live_context}"}]})
+
+            key, _ki = await get_next_gemini_key()
+            if not key:
+                await websocket.send("[!] API anahtari bulunamadi.")
+                await websocket.send("[END]")
+                return
+
+            url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
+            stream_payload = {
+                "contents": contents,
+                "system_instruction": {"parts": [{"text": get_system_prompt()}]},
+                "generationConfig": {"temperature": 0.65, "topP": 0.9, "maxOutputTokens": 2000},
+            }
+
+            full_resp = ""
+            async with session.post(url, json=stream_payload) as resp:
+                if resp.status != 200:
+                    await websocket.send(f"[!] API Hatası: {resp.status}")
+                else:
+                    async for line_bytes in resp.content:
+                        line = line_bytes.decode("utf-8", errors="ignore")
+                        if line.startswith("data:"):
+                            try:
+                                chunk = json.loads(line[5:])
+                                candidates = chunk.get("candidates", [])
+                                if candidates:
+                                    parts = candidates[0].get("content", {}).get("parts", [])
+                                    txt = "".join(p.get("text", "") for p in parts)
+                                    if txt:
+                                        full_resp += txt
+                                        await websocket.send(txt)
+                            except Exception:
+                                continue
+
+            await websocket.send("[END]")
+            history.append({"sender": "user", "message": user_msg})
+            history.append({"sender": "nova", "message": full_resp})
+            DIRTY_FLAGS["history"] = True
+
+        except Exception as e:
+            await websocket.send(f"HATA: {str(e)}")
+            await websocket.send("[END]")
+            break
+
+
+async def keep_alive():
+    while True:
+        await asyncio.sleep(600)
+
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    print(f"Nova Sunucusu {port} portunda baslatiliyor...")
-    app.run(host="0.0.0.0", port=port)
-
-
+    port = int(os.environ.get("PORT", 5000))
+    if os.name == 'nt':
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
+    app.run(host="0.0.0.0", port=port, debug=False)
