@@ -1174,10 +1174,14 @@ async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_
         "generationConfig": {"temperature": 0.6, "topP": 0.9, "maxOutputTokens": 1500},
     }
 
+    yielded_any = False
     async for chunk in _generate_with_gemini_stream(payload, sys_prompt, message, live_context):
         if chunk:
             yield chunk
+            yielded_any = True
 
+    if yielded_any:
+        return
 
     skipped: set[int] = set()
     for attempt in range(len(GEMINI_API_KEYS) + 1):
@@ -1204,7 +1208,8 @@ async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_
                             print(f"[OK] Key #{key_idx} basarili")
                             if _is_cacheable(message) and not image_data and not custom_prompt:
                                 resp_cache_set(message, result)
-                            return result
+                            yield result
+                            return
                     print(f"[!] Key #{key_idx} bos yanıt dondurdu (Safety filter?)")
 
                 elif resp.status == 404:
@@ -1215,7 +1220,8 @@ async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_
                         if r_alt.status == 200:
                             d_alt = await r_alt.json()
                             parts = d_alt["candidates"][0]["content"].get("parts", [])
-                            return " ".join(p["text"] for p in parts if "text" in p).strip()
+                            yield " ".join(p["text"] for p in parts if "text" in p).strip()
+                            return
 
                 elif resp.status == 400:
                     print(f"[!] Key #{key_idx} 400: Parametre hatasi, sadeleştiriliyor...")
@@ -1224,7 +1230,8 @@ async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_
                     async with sess.post(url, json=payload_nt, timeout=aiohttp.ClientTimeout(total=30)) as r2:
                         if r2.status == 200:
                             d2 = await r2.json()
-                            return " ".join(p["text"] for p in d2["candidates"][0]["content"]["parts"] if "text" in p).strip()
+                            yield " ".join(p["text"] for p in d2["candidates"][0]["content"]["parts"] if "text" in p).strip()
+                            return
                         
                         # 2. Aşama: Hala 400 ise System Instruction alanını mesajın içine göm (Legacy Mode)
                         p_legacy = payload_nt.copy()
@@ -1238,7 +1245,8 @@ async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_
                             async with sess.post(url, json=p_legacy, timeout=aiohttp.ClientTimeout(total=30)) as r3:
                                 if r3.status == 200:
                                     d3 = await r3.json()
-                                    return " ".join(p["text"] for p in d3["candidates"][0]["content"]["parts"] if "text" in p).strip()
+                                    yield " ".join(p["text"] for p in d3["candidates"][0]["content"]["parts"] if "text" in p).strip()
+                                    return
 
                 else:
                     print(f"[!] Key #{key_idx} HTTP {resp.status}: {body_text[:100]}")
@@ -1250,7 +1258,7 @@ async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_
             await asyncio.sleep(0.5)
 
 
-    return "[!] Su an yogunluk var, tekrar dener misin?"
+    yield "[!] Su an yogunluk var, tekrar dener misin?"
 
 # ============================================================
 # YAŞAM DÖNGÜSÜ
