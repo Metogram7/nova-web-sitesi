@@ -1100,95 +1100,107 @@ async def _generate_with_gemini(sess, payload, sys_prompt, message, live_context
         skipped.add(key_idx)
     return ""
 
-async def _generate_with_gemini_stream(sess, payload, sys_prompt, message, live_context):
-    skipped: set[int] = set()
-    for attempt in range(len(GEMINI_API_KEYS) + 1):
-        key, key_idx = await get_next_gemini_key(skip_indices=skipped)
-        if key is None:
-            break
-        print(f"[KEY-STREAM] Key #{key_idx} (attempt {attempt+1})")
+async def _generate_with_gemini_stream(sess: aiohttp.ClientSession, payload: dict, sys_prompt: str, message: str, live_context: str):
+    # Eğer API key listesi boşsa direkt çıkış yap
+    if not GEMINI_API_KEYS:
+        yield "[!] API anahtari yuklenmemis."
+        return
+
+    payloads_to_try = [
+        ("standard", payload),
+    ]
+    if "tools" in payload:
+        payload_nt = {k: v for k, v in payload.items() if k != "tools"}
+        payloads_to_try.append(("no_tools", payload_nt))
+    else:
+        payload_nt = payload
         
-        payloads_to_try = [
-            ("standard", payload),
-        ]
-        if "tools" in payload:
-            payload_nt = {k: v for k, v in payload.items() if k != "tools"}
-            payloads_to_try.append(("no_tools", payload_nt))
-        else:
-            payload_nt = payload
-            
-        p_legacy = payload_nt.copy()
-        if "systemInstruction" in p_legacy:
-            del p_legacy["systemInstruction"]
-            legacy_msg = f"{sys_prompt}\n\nYukarıdaki talimatlara göre cevapla:\n{message}"
-            contents_copy = []
-            for c in p_legacy.get("contents", []):
-                contents_copy.append({
-                    "role": c["role"],
-                    "parts": [p.copy() for p in c["parts"]]
-                })
-            if contents_copy and contents_copy[-1]["role"] == "user":
-                contents_copy[-1]["parts"][0]["text"] = f"{legacy_msg}{live_context}"
-            p_legacy["contents"] = contents_copy
-            payloads_to_try.append(("legacy", p_legacy))
+    p_legacy = payload_nt.copy()
+    if "systemInstruction" in p_legacy:
+        del p_legacy["systemInstruction"]
+        legacy_msg = f"{sys_prompt}\n\nYukarıdaki talimatlara göre cevapla:\n{message}"
+        contents_copy = []
+        for c in p_legacy.get("contents", []):
+            contents_copy.append({
+                "role": c["role"],
+                "parts": [p.copy() for p in c["parts"]]
+            })
+        if contents_copy and contents_copy[-1]["role"] == "user":
+            contents_copy[-1]["parts"][0]["text"] = f"{legacy_msg}{live_context}"
+        p_legacy["contents"] = contents_copy
+        payloads_to_try.append(("legacy", p_legacy))
 
-        success = False
-        for payload_name, p_load in payloads_to_try:
-            max_retries = 3
-            for retry_idx in range(max_retries):
-                try:
-                    url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
-                    async with MODEL_SEMAPHORE:
-                        async with sess.post(
-                            url,
-                            json=p_load,
-                            timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
-                        ) as resp:
-                            
-                            # EĞER SUNUCU YOĞUNSA (503) VEYA KOTA DOLDUYSA (429) BİRAZ BEKLE VE TEKRAR DENE
-                            if resp.status in (429, 503):
-                                print(f"[WS] Sunucu yogun ({resp.status}), {retry_idx + 1}. deneme oncesi bekleniyor...")
-                                await asyncio.sleep(1.5 * (retry_idx + 1))  # Katlanarak artan bekleme süresi
-                                continue
+    # Key Rotasyonu ve Akıllı Retry Döngüsü
+    skip_keys = set()
+    success = False
 
-                            if resp.status == 200:
-                                async for line_bytes in resp.content:
-                                    line = line_bytes.decode("utf-8", errors="ignore")
-                                    if line.startswith("data:"):
-                                        try:
-                                            chunk = json.loads(line[5:])
-                                            candidates = chunk.get("candidates", [])
-                                            if candidates:
-                                                parts = candidates[0].get("content", {}).get("parts", [])
-                                                txt = "".join(p.get("text", "") for p in parts)
-                                                if txt:
-                                                    yield txt
-                                        except:
-                                            continue
-                                success = True
-                                break
-                            elif resp.status == 400:
-                                body_text = await resp.text()
-                                print(f"[!] Key #{key_idx} 400 ({payload_name}): {body_text[:400]}, fallback payload deneniyor...")
-                                break
-                            else:
-                                body_text = await resp.text()
-                                print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}): {body_text[:400]}")
-                                break
-                except Exception as e:
-                    print(f"[STREAM-ERR] Key #{key_idx} ({payload_name}) - Deneme {retry_idx+1}/{max_retries}: {e}")
-                    if retry_idx < max_retries - 1:
-                        wait_time = 1.0 * (retry_idx + 1)
-                        await asyncio.sleep(wait_time)
-                        continue
-                    break
-            if success:
-                break
-                
+    for payload_name, p_load in payloads_to_try:
         if success:
-            return
-        skipped.add(key_idx)
-    yield ""
+            break
+
+        max_retries = 3
+        for retry_idx in range(max_retries):
+            # Her denemede temiz, aktif bir key çekiyoruz
+            key, key_idx = await get_next_gemini_key(skip_indices=skip_keys)
+            if not key:
+                print("[GEMINI] Denenebilecek aktif API key kalmadi.")
+                break
+
+            try:
+                url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
+                async with MODEL_SEMAPHORE:
+                    async with sess.post(
+                        url, json=p_load, timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
+                    ) as resp:
+                        
+                        # EĞER 429 (Kota) VEYA 503 (Yoğunluk) ALIRSAK
+                        if resp.status in (429, 503):
+                            print(f"[WS] Sürüm {GEMINI_MODEL_NAME} yoğunluk bildirdi ({resp.status}). Key #{key_idx} nadasa alınıyor.")
+                            mark_key_rate_limited_sync(key_idx)
+                            skip_keys.add(key_idx)
+                            # Sunucuya nefes aldır: Sırasıyla 1.5s, 3.0s, 4.5s bekle
+                            await asyncio.sleep(1.5 * (retry_idx + 1))
+                            continue
+
+                        if resp.status != 200:
+                            print(f"[GEMINI] HTTP Hata Kodu: {resp.status} ({payload_name}). Başka anahtar denenecek.")
+                            skip_keys.add(key_idx)
+                            await asyncio.sleep(1)
+                            continue
+
+                        # Başarılı bağlantı sağlandıysa veriyi akıtıyoruz
+                        success = True
+                        buffer = ""
+                        async for line_bytes in resp.content:
+                            line = line_bytes.decode('utf-8', errors='replace')
+                            buffer += line
+                            while "\n" in buffer:
+                                current_line, buffer = buffer.split("\n", 1)
+                                current_line = current_line.strip()
+                                if not current_line.startswith("data:"):
+                                    continue
+                                raw_json = current_line[5:].strip()
+                                if not raw_json:
+                                    continue
+                                try:
+                                    parsed = json.loads(raw_json)
+                                    txt = _extract_gemini_text(parsed)
+                                    if txt:
+                                        yield txt
+                                except Exception:
+                                    pass
+                        break # İç döngüden çık, işlem başarıyla tamamlandı
+
+            except asyncio.TimeoutError:
+                print(f"[GEMINI] Zaman aşımı! Key #{key_idx} yanıt vermedi.")
+                skip_keys.add(key_idx)
+            except Exception as e:
+                print(f"[GEMINI] İstek sırasında beklenmedik hata: {e}")
+                skip_keys.add(key_idx)
+                await asyncio.sleep(0.5)
+
+    if not success:
+        yield "[!] Su an yogunluk var, tekrar dener misin?"
 
 
 # ============================================================
