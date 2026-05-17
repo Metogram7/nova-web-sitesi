@@ -142,7 +142,7 @@ CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
-GEMINI_MODEL_NAME = "gemini-1.5-flash"
+GEMINI_MODEL_NAME = "gemini-1.5-flash-latest"
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL_TIMEOUT_SECS = 18
 LIVE_DATA_TIMEOUT_SECS = 8
@@ -1144,6 +1144,13 @@ async def _generate_with_gemini_stream(sess, payload, sys_prompt, message, live_
                             json=p_load,
                             timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
                         ) as resp:
+                            
+                            # EĞER SUNUCU YOĞUNSA (503) VEYA KOTA DOLDUYSA (429) BİRAZ BEKLE VE TEKRAR DENE
+                            if resp.status in (429, 503):
+                                print(f"[WS] Sunucu yogun ({resp.status}), {retry_idx + 1}. deneme oncesi bekleniyor...")
+                                await asyncio.sleep(1.5 * (retry_idx + 1))  # Katlanarak artan bekleme süresi
+                                continue
+
                             if resp.status == 200:
                                 async for line_bytes in resp.content:
                                     line = line_bytes.decode("utf-8", errors="ignore")
@@ -1160,17 +1167,6 @@ async def _generate_with_gemini_stream(sess, payload, sys_prompt, message, live_
                                             continue
                                 success = True
                                 break
-                            elif resp.status in (429, 503):
-                                body_text = await resp.text()
-                                print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}) - Stream Deneme {retry_idx+1}/{max_retries}: {body_text[:400]}")
-                                if retry_idx < max_retries - 1:
-                                    wait_time = 1.0 * (retry_idx + 1) + random.uniform(0.1, 0.5)
-                                    print(f"[!] Hata alindi (Stream), {wait_time:.2f} saniye sonra tekrar deneniyor...")
-                                    await asyncio.sleep(wait_time)
-                                    continue
-                                else:
-                                    mark_key_rate_limited_sync(key_idx)
-                                    break
                             elif resp.status == 400:
                                 body_text = await resp.text()
                                 print(f"[!] Key #{key_idx} 400 ({payload_name}): {body_text[:400]}, fallback payload deneniyor...")
