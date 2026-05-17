@@ -142,7 +142,7 @@ CURRENT_KEY_INDEX = 0
 KEY_LOCK = asyncio.Lock()
 KEY_COOLDOWNS: dict[int, float] = {}
 KEY_COOLDOWN_SECS = 60
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+GEMINI_MODEL_NAME = "gemini-1.5-flash"
 GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL_TIMEOUT_SECS = 18
 LIVE_DATA_TIMEOUT_SECS = 8
@@ -1044,39 +1044,55 @@ async def _generate_with_gemini(sess, payload, sys_prompt, message, live_context
         success = False
         result_text = ""
         for payload_name, p_load in payloads_to_try:
-            try:
-                url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
-                async with MODEL_SEMAPHORE:
-                    async with sess.post(
-                        url,
-                        json=p_load,
-                        timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
-                    ) as resp:
-                        body_text = await resp.text()
-                        
+            max_retries = 3
+            for retry_idx in range(max_retries):
                 try:
-                    data = json.loads(body_text)
-                except Exception:
-                    data = {}
+                    url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:generateContent?key={key}"
+                    async with MODEL_SEMAPHORE:
+                        async with sess.post(
+                            url,
+                            json=p_load,
+                            timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
+                        ) as resp:
+                            body_text = await resp.text()
+                            
+                    try:
+                        data = json.loads(body_text)
+                    except Exception:
+                        data = {}
 
-                if resp.status == 200:
-                    result = _extract_gemini_text(data)
-                    if result:
-                        result_text = result
-                        success = True
+                    if resp.status == 200:
+                        result = _extract_gemini_text(data)
+                        if result:
+                            result_text = result
+                            success = True
+                            break
+                        print(f"[!] Key #{key_idx} bos yanit dondurdu ({payload_name})")
                         break
-                    print(f"[!] Key #{key_idx} bos yanit dondurdu ({payload_name})")
-                elif resp.status in (429, 503):
-                    print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}): {body_text[:400]}")
-                    mark_key_rate_limited_sync(key_idx)
+                    elif resp.status in (429, 503):
+                        print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}) - Deneme {retry_idx+1}/{max_retries}: {body_text[:400]}")
+                        if retry_idx < max_retries - 1:
+                            wait_time = 1.0 * (retry_idx + 1) + random.uniform(0.1, 0.5)
+                            print(f"[!] Hata alindi, {wait_time:.2f} saniye sonra tekrar deneniyor...")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            mark_key_rate_limited_sync(key_idx)
+                            break
+                    elif resp.status == 400:
+                        print(f"[!] Key #{key_idx} 400 ({payload_name}): {body_text[:400]}, fallback payload deneniyor...")
+                        break
+                    else:
+                        print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}): {body_text[:400]}")
+                        break
+                except Exception as e:
+                    print(f"[!] Key #{key_idx} ({payload_name}) hata: {e}")
+                    if retry_idx < max_retries - 1:
+                        wait_time = 1.0 * (retry_idx + 1)
+                        await asyncio.sleep(wait_time)
+                        continue
                     break
-                elif resp.status == 400:
-                    print(f"[!] Key #{key_idx} 400 ({payload_name}): {body_text[:400]}, fallback payload deneniyor...")
-                    continue
-                else:
-                    print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}): {body_text[:400]}")
-            except Exception as e:
-                print(f"[!] Key #{key_idx} ({payload_name}) hata: {e}")
+            if success:
                 break
                 
         if success:
@@ -1118,44 +1134,59 @@ async def _generate_with_gemini_stream(sess, payload, sys_prompt, message, live_
 
         success = False
         for payload_name, p_load in payloads_to_try:
-            try:
-                url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
-                async with MODEL_SEMAPHORE:
-                    async with sess.post(
-                        url,
-                        json=p_load,
-                        timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
-                    ) as resp:
-                        if resp.status == 200:
-                            async for line_bytes in resp.content:
-                                line = line_bytes.decode("utf-8", errors="ignore")
-                                if line.startswith("data:"):
-                                    try:
-                                        chunk = json.loads(line[5:])
-                                        candidates = chunk.get("candidates", [])
-                                        if candidates:
-                                            parts = candidates[0].get("content", {}).get("parts", [])
-                                            txt = "".join(p.get("text", "") for p in parts)
-                                            if txt:
-                                                yield txt
-                                    except:
-                                        continue
-                            success = True
-                            break
-                        elif resp.status in (429, 503):
-                            body_text = await resp.text()
-                            print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}): {body_text[:400]}")
-                            mark_key_rate_limited_sync(key_idx)
-                            break
-                        elif resp.status == 400:
-                            body_text = await resp.text()
-                            print(f"[!] Key #{key_idx} 400 ({payload_name}): {body_text[:400]}, fallback payload deneniyor...")
-                            continue
-                        else:
-                            body_text = await resp.text()
-                            print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}): {body_text[:400]}")
-            except Exception as e:
-                print(f"[STREAM-ERR] Key #{key_idx} ({payload_name}): {e}")
+            max_retries = 3
+            for retry_idx in range(max_retries):
+                try:
+                    url = f"{GEMINI_REST_URL_BASE}/{GEMINI_MODEL_NAME}:streamGenerateContent?key={key}&alt=sse"
+                    async with MODEL_SEMAPHORE:
+                        async with sess.post(
+                            url,
+                            json=p_load,
+                            timeout=aiohttp.ClientTimeout(total=MODEL_TIMEOUT_SECS),
+                        ) as resp:
+                            if resp.status == 200:
+                                async for line_bytes in resp.content:
+                                    line = line_bytes.decode("utf-8", errors="ignore")
+                                    if line.startswith("data:"):
+                                        try:
+                                            chunk = json.loads(line[5:])
+                                            candidates = chunk.get("candidates", [])
+                                            if candidates:
+                                                parts = candidates[0].get("content", {}).get("parts", [])
+                                                txt = "".join(p.get("text", "") for p in parts)
+                                                if txt:
+                                                    yield txt
+                                        except:
+                                            continue
+                                success = True
+                                break
+                            elif resp.status in (429, 503):
+                                body_text = await resp.text()
+                                print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}) - Stream Deneme {retry_idx+1}/{max_retries}: {body_text[:400]}")
+                                if retry_idx < max_retries - 1:
+                                    wait_time = 1.0 * (retry_idx + 1) + random.uniform(0.1, 0.5)
+                                    print(f"[!] Hata alindi (Stream), {wait_time:.2f} saniye sonra tekrar deneniyor...")
+                                    await asyncio.sleep(wait_time)
+                                    continue
+                                else:
+                                    mark_key_rate_limited_sync(key_idx)
+                                    break
+                            elif resp.status == 400:
+                                body_text = await resp.text()
+                                print(f"[!] Key #{key_idx} 400 ({payload_name}): {body_text[:400]}, fallback payload deneniyor...")
+                                break
+                            else:
+                                body_text = await resp.text()
+                                print(f"[!] Key #{key_idx} HTTP {resp.status} ({payload_name}): {body_text[:400]}")
+                                break
+                except Exception as e:
+                    print(f"[STREAM-ERR] Key #{key_idx} ({payload_name}) - Deneme {retry_idx+1}/{max_retries}: {e}")
+                    if retry_idx < max_retries - 1:
+                        wait_time = 1.0 * (retry_idx + 1)
+                        await asyncio.sleep(wait_time)
+                        continue
+                    break
+            if success:
                 break
                 
         if success:
