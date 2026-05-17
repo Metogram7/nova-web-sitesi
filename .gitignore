@@ -1,0 +1,36 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+pyvenv.cfg
+.python-version
+
+# Python cache / compiles
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local databases and temporary data files (CRITICAL to ignore!)
+chat_history.json
+cache.json
+daily_limits.json
+developer_data.json
+last_seen.json
+tokens.json
+shared_chats.json
+*.json.tmp
+users/
+kullanicilar/
+data/
+
+# Private keys / Credentials (CRITICAL to ignore!)
+firebase-admin*.json
+serviceAccountKey.json
+service_account.json
+.env
+
+# Editor settings
+.vscode/
+.idea/

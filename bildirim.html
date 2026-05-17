@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>NoVa Bildirim Test</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+<h1>NoVa Bildirim Test</h1>
+
+<input id="title" placeholder="Başlık">
+<textarea id="message" placeholder="Mesaj"></textarea>
+<button id="sendBtn">Bildirim Gönder</button>
+<div id="status"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+import { getMessaging, getToken } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-messaging.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDqQAHCB2MizgN5Id5Ezfr3UPE1P3UlSS8",
+  authDomain: "nova-329c7.firebaseapp.com",
+  projectId: "nova-329c7",
+  storageBucket: "nova-329c7.firebasestorage.app",
+  messagingSenderId: "284547967902",
+  appId: "1:284547967902:web:7dd2e64d1a643a30e5c48f"
+};
+
+const app = initializeApp(firebaseConfig);
+const messaging = getMessaging(app);
+
+async function registerPush() {
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") return;
+
+  const token = await getToken(messaging, {
+    vapidKey: "BDMDVEtUfabWh6LAnM15zLGcK2R-1kxuSvjwegdx0q-I46l9GnBSSKimwAoIxUhOxh5QtRxAtt0Hj9PBl19qlxU"
+  });
+
+  console.log("FCM TOKEN:", token);
+
+  // Backend'e token gönder (opsiyonel)
+  await fetch("/register-token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token })
+  });
+}
+
+registerPush();
+
+// 🔥 Burada buton için event listener ile send fonksiyonu
+async function send() {
+  const title = document.getElementById("title").value.trim();
+  const message = document.getElementById("message").value.trim();
+  const status = document.getElementById("status");
+
+  status.textContent = "";
+  status.style.color = "black";
+
+  if (!title || !message) {
+    status.textContent = "Başlık ve mesaj gerekli!";
+    status.style.color = "red";
+    return;
+  }
+
+  try {
+    const res = await fetch("/bildirim-test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, message })
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      status.textContent = "Bildirim backend'e ulaştı ✔";
+      status.style.color = "green";
+    } else {
+      status.textContent = data.error || "Hata oluştu";
+      status.style.color = "red";
+    }
+  } catch {
+    status.textContent = "Backend erişilemiyor";
+    status.style.color = "red";
+  }
+}
+
+// Butona listener ekle
+document.getElementById("sendBtn").addEventListener("click", send);
+</script>
+</body>
+</html>
