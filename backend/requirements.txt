@@ -1,0 +1,9 @@
+quart
+quart-cors
+aiohttp
+aiofiles
+firebase-admin
+werkzeug
+hypercorn
+ujson
+google-genai

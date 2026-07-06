@@ -1,0 +1,43 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+pyvenv.cfg
+.python-version
+
+# Python cache / compiles
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Local databases and temporary data files
+chat_history.json
+cache.json
+daily_limits.json
+developer_data.json
+last_seen.json
+tokens.json
+shared_chats.json
+*.json.tmp
+users/
+kullanicilar/
+data/
+
+# Private keys / Credentials (CRITICAL to ignore!)
+backend/firebase-admin*.json
+backend/serviceAccountKey.json
+backend/service_account.json
+.env
+
+# Editor settings
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
