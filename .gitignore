@@ -27,10 +27,13 @@ users/
 kullanicilar/
 data/
 
+# Frontend (ayrı sunulur)
+frontend/
+
 # Private keys / Credentials (CRITICAL to ignore!)
-backend/firebase-admin*.json
-backend/serviceAccountKey.json
-backend/service_account.json
+firebase-admin*.json
+serviceAccountKey.json
+service_account.json
 .env
 
 # Editor settings
