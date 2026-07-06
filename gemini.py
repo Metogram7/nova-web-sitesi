@@ -378,6 +378,9 @@ async def gemma_cevap_async(message, conversation, sess, user_name=None, image_d
         if live_summary:
             live_context = f"\n\n<WEB_DATA>{live_summary}</WEB_DATA>"
             print(f"[OK] WEB_DATA ({len(live_summary)} chr)")
+        else:
+            live_context = "\n\n[NOT: Güncel veriye ulaşılamadı. Sakın kendi eğitim verinden tahmin yapma, kullanıcıya verinin alınamadığını söyle.]"
+            print("[!] WEB_DATA alinamadi, Gemini uyarildi.")
 
     trimmed_history = _trim_history(conversation)
     contents = []
@@ -432,6 +435,8 @@ async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_
         live_summary = await fetch_live_data_full(q, sess)
         if live_summary:
             live_context = f"\n\n<WEB_DATA>{live_summary}</WEB_DATA>"
+        else:
+            live_context = "\n\n[NOT: Güncel veriye ulaşılamadı. Sakın kendi eğitim verinden tahmin yapma, kullanıcıya verinin alınamadığını söyle.]"
 
     trimmed_history = _trim_history(conversation)
     contents = []

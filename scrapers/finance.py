@@ -1,8 +1,43 @@
 import json
+import re
 import asyncio
 
 from config import EXCHANGERATE_API_KEY, COINGECKO_API_KEY, ALPHA_VANTAGE_KEY
 from utils import rand_headers, safe_get
+
+
+async def _try_frankfurter(currency, sess):
+    """Fallback: frankfurter.app (ücretsiz, güvenilir)"""
+    try:
+        status, text = await safe_get(sess,
+            f"https://api.frankfurter.app/latest?from={currency}&to=TRY", timeout=8)
+        if status == 200 and text:
+            d = json.loads(text)
+            rate = d.get("rates", {}).get("TRY")
+            if rate:
+                date = d.get("date", "")
+                return {"snippet": f"1 {currency} = {rate:.4f} TRY (Güncelleme: {date}).", "src": "frankfurter"}
+    except Exception:
+        pass
+    return None
+
+
+async def _try_erapi(currency, sess):
+    """Önce ücretli API, yoksa ücretsiz open.er-api.com"""
+    er_url = (f"https://v6.exchangerate-api.com/v6/{EXCHANGERATE_API_KEY}/latest/{currency}"
+              if EXCHANGERATE_API_KEY else f"https://open.er-api.com/v6/latest/{currency}")
+    status, text = await safe_get(sess, er_url, timeout=8)
+    if status == 200 and text:
+        try:
+            d = json.loads(text)
+            if d.get("result") == "success":
+                rate = d["rates"].get("TRY")
+                update_time = d.get("time_last_update_utc", "")[:16]
+                if rate:
+                    return {"snippet": f"1 {currency} = {rate:.4f} TRY (Güncelleme: {update_time} UTC).", "src": "exchangerate_api"}
+        except Exception:
+            pass
+    return None
 
 
 async def scrape_exchange_rate(query, sess):
@@ -17,21 +52,46 @@ async def scrape_exchange_rate(query, sess):
     if any(w in msg for w in ["riyal", "sar"]):         targets.append("SAR")
     if any(w in msg for w in ["ruble", "rub"]):         targets.append("RUB")
     for currency in targets[:2]:
-        er_url = (f"https://v6.exchangerate-api.com/v6/{EXCHANGERATE_API_KEY}/latest/{currency}"
-                  if EXCHANGERATE_API_KEY else f"https://open.er-api.com/v6/latest/{currency}")
-        status, text = await safe_get(sess, er_url, timeout=8)
-        if status == 200 and text:
-            try:
-                d = json.loads(text)
-                if d.get("result") == "success":
-                    try_rate = d["rates"].get("TRY")
-                    update_time = d.get("time_last_update_utc", "")[:16]
-                    if try_rate:
-                        results.append({"snippet": f"1 {currency} = {try_rate:.4f} TRY (Güncelleme: {update_time} UTC).", "src": "exchangerate_api"})
-            except Exception:
-                pass
+        result = await _try_erapi(currency, sess)
+        if not result:
+            result = await _try_frankfurter(currency, sess)
+        if not result:
+            result = await _try_scrape_bigpara(currency, sess)
+        if result:
+            results.append(result)
         await asyncio.sleep(0.05)
     return results
+
+
+async def _try_scrape_bigpara(currency, sess):
+    """Son çare: bigpara.hurriyet.com.tr'den HTML scrape"""
+    symbol_map = {"USD": "dolar", "EUR": "euro", "GBP": "sterlin", "CHF": "frank",
+                  "JPY": "yen", "SAR": "riyal", "RUB": "ruble"}
+    slug = symbol_map.get(currency)
+    if not slug:
+        return None
+    try:
+        status, html = await safe_get(sess,
+            f"https://bigpara.hurriyet.com.tr/doviz/{slug}/",
+            headers=rand_headers({"Referer": "https://bigpara.hurriyet.com.tr/"}),
+            timeout=10)
+        if status == 200 and html:
+            # BigPara'da kur bilgisi genelde span.band veya benzeri elementte
+            m = re.search(r'class="[^"]*value[^"]*"[^>]*>([\d.,]+)', html)
+            if not m:
+                m = re.search(r'data-value="([\d.]+)"', html)
+            if not m:
+                m = re.search(r'([\d]+[.,][\d]+)\s*TL', html)
+            if m:
+                rate_str = m.group(1).replace(",", ".")
+                try:
+                    rate = float(rate_str)
+                    return {"snippet": f"1 {currency} ≈ {rate:.4f} TRY (bigpara).", "src": "bigpara"}
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    return None
 
 
 async def scrape_coingecko(query, sess):
