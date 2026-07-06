@@ -198,9 +198,11 @@ async def chat():
             async def generate():
                 full_resp = ""
                 async for chunk in gemma_cevap_stream(user_msg, history, session, user_id, image_b64, custom):
-                    if chunk:
+                    if chunk.startswith("__STATUS__:"):
+                        yield f"data: {json.dumps({'type': 'status', 'text': chunk[11:]}, ensure_ascii=False)}\n\n"
+                    elif chunk:
                         full_resp += chunk
-                        yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'token', 'text': chunk}, ensure_ascii=False)}\n\n"
 
                 if full_resp:
                     history.append({"sender": "user", "message": user_msg})
@@ -352,9 +354,11 @@ async def ws_chat_handler():
 
             full_resp = ""
             async for chunk in gemma_cevap_stream(user_msg, history, session, user_id, image_b64, custom):
-                if chunk:
+                if chunk.startswith("__STATUS__:"):
+                    await websocket.send(json.dumps({"type": "status", "text": chunk[11:]}, ensure_ascii=False))
+                elif chunk:
                     full_resp += chunk
-                    await websocket.send(chunk)
+                    await websocket.send(json.dumps({"type": "token", "text": chunk}, ensure_ascii=False))
 
             await websocket.send("[END]")
 

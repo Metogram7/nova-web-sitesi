@@ -431,12 +431,14 @@ async def gemma_cevap_stream(message, conversation, sess, user_name=None, image_
     live_summary = ""
     needed, opt_query = await should_search(message, sess)
     if needed:
+        yield "__STATUS__:Araştırılıyor..."
         q = opt_query or message
         live_summary = await fetch_live_data_full(q, sess)
         if live_summary:
             live_context = f"\n\n<WEB_DATA>{live_summary}</WEB_DATA>"
         else:
             live_context = "\n\n[NOT: Güncel veriye ulaşılamadı. Sakın kendi eğitim verinden tahmin yapma, kullanıcıya verinin alınamadığını söyle.]"
+    yield "__STATUS__:Yanıt oluşturuluyor..."
 
     trimmed_history = _trim_history(conversation)
     contents = []
