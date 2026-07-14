@@ -12,7 +12,7 @@ from quart_cors import cors
 
 from config import (
     HISTORY_FILE, LAST_SEEN_FILE, CACHE_FILE, TOKENS_FILE, SHARED_CHATS_FILE,
-    GEMINI_API_KEYS, GEMINI_MODEL_NAME,
+    GEMINI_API_KEYS, GEMINI_MODEL_NAME, DEEPSEEK_API_KEY,
 )
 from cache import _resp_cache as resp_cache_inst
 from gemini import gemma_cevap_async, gemma_cevap_stream, get_nova_date
@@ -36,7 +36,8 @@ SHARED_CHATS: dict[str, dict] = {}
 async def startup():
     print("=" * 50)
     print(f"[START] Nova 5.0 baslatiliyor... Port: {os.environ.get('PORT', 5000)}")
-    print(f"[KEYS] {len(GEMINI_API_KEYS)} API anahtari yuklendi.")
+    ds = " + DeepSeek" if DEEPSEEK_API_KEY else ""
+    print(f"[KEYS] {len(GEMINI_API_KEYS)} Gemini{ds} API anahtari yuklendi.")
     print("=" * 50)
     global session
     connector = aiohttp.TCPConnector(ssl=False, limit=200, limit_per_host=15)

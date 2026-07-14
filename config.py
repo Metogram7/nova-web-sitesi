@@ -19,7 +19,6 @@ SHARED_CHATS_FILE = get_path("shared_chats.json")
 # API KEY'LER
 # ============================================================
 GEMINI_API_KEYS = [k.strip() for k in [
-    os.getenv("GEMINI_API_KEY_A", ""),
     os.getenv("GEMINI_API_KEY_B", ""),
     os.getenv("GEMINI_API_KEY_C", ""),
     os.getenv("GEMINI_API_KEY_D", ""),
@@ -27,6 +26,7 @@ GEMINI_API_KEYS = [k.strip() for k in [
     os.getenv("GEMINI_API_KEY_F", ""),
 ] if k.strip()]
 
+DEEPSEEK_API_KEY     = os.getenv("GEMINI_API_KEY_A", "").strip()
 COINGECKO_API_KEY    = os.getenv("COINGECKO_API_KEY", "").strip()
 EXCHANGERATE_API_KEY = os.getenv("EXCHANGERATE_API_KEY", "").strip()
 OPENWEATHER_API_KEY  = os.getenv("OPENWEATHER_API_KEY", "").strip()
@@ -42,6 +42,12 @@ GEMINI_REST_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL_TIMEOUT_SECS   = 18
 LIVE_DATA_TIMEOUT_SECS = 8
 KEY_COOLDOWN_SECS    = 60
+
+# ============================================================
+# DEEPSEEK AYARLARI (GEMINI_API_KEY_A slot'u kullanılır)
+# ============================================================
+DEEPSEEK_MODEL_NAME    = "deepseek-chat"
+DEEPSEEK_REST_URL      = "https://api.deepseek.com/v1/chat/completions"
 
 # ============================================================
 # CACHE AYARLARI
